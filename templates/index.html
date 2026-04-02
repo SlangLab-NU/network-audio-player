@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Torgo Speech Labeler</title>
+    <script src="https://unpkg.com/wavesurfer.js@6"></script>
+    <script src="https://unpkg.com/wavesurfer.js@6/dist/plugin/wavesurfer.regions.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -121,11 +123,60 @@
             border-radius: 0 6px 6px 0;
             min-height: 36px;
         }
-        audio {
-            width: 100%;
+
+        /* Waveform */
+        #waveform {
             margin-top: 14px;
             border-radius: 6px;
+            overflow: hidden;
+            background: #0a0d14;
+            min-height: 80px;
         }
+        #waveform wave { overflow: hidden !important; }
+
+        /* Waveform controls */
+        .waveform-controls {
+            display: none;
+            gap: 6px;
+            margin-top: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .btn-wave {
+            background: #1e2a40;
+            color: #aaa;
+            border: 1px solid #2a3a60;
+            padding: 5px 12px;
+            font-size: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: filter 0.15s, background 0.1s;
+            white-space: nowrap;
+        }
+        .btn-wave:hover { filter: brightness(1.25); }
+        .btn-wave:disabled { opacity: 0.35; cursor: default; }
+        .btn-wave.active { background: #2c3a5a; color: #7fb3f5; border-color: #3a5a90; }
+        .zoom-group { display: flex; gap: 4px; margin-left: auto; }
+
+        #phn-badge {
+            display: none;
+            font-size: 11px;
+            color: #4a7fd4;
+            background: rgba(74,127,212,0.1);
+            border: 1px solid rgba(74,127,212,0.2);
+            border-radius: 4px;
+            padding: 2px 8px;
+        }
+        #phn-no-file {
+            display: none;
+            font-size: 11px;
+            color: #444;
+            text-align: center;
+            margin-top: 6px;
+            font-style: italic;
+        }
+
         .current-label-badge {
             margin-top: 10px;
             text-align: center;
@@ -172,23 +223,6 @@
             font-size: 12px;
         }
         #upload-msg { font-size: 12px; color: #888; margin-left: auto; }
-
-        /* PHN timeline */
-        #phn-canvas {
-            display: none;
-            width: 100%;
-            margin-top: 12px;
-            border-radius: 4px;
-            cursor: crosshair;
-        }
-        #phn-no-file {
-            display: none;
-            font-size: 11px;
-            color: #444;
-            text-align: center;
-            margin-top: 10px;
-            font-style: italic;
-        }
 
         /* Empty state */
         .empty-state {
@@ -400,8 +434,23 @@
                     <div class="np-filename" id="np-filename">—</div>
                     <div class="np-meta" id="np-meta"></div>
                     <div class="prompt-box" id="prompt-box">—</div>
-                    <audio id="audioPlayer" controls></audio>
-                    <canvas id="phn-canvas"></canvas>
+
+                    <!-- WaveSurfer waveform -->
+                    <div id="waveform"></div>
+
+                    <!-- Waveform controls -->
+                    <div class="waveform-controls" id="waveform-controls">
+                        <button class="btn-wave" id="btn-play" onclick="wsPlayPause()">▶ Play</button>
+                        <button class="btn-wave" onclick="wsStop()">&#9632; Stop</button>
+                        <button class="btn-wave" id="btn-play-sel" onclick="wsPlaySelection()" disabled>▶ Selection</button>
+                        <span id="phn-badge">PHN</span>
+                        <div class="zoom-group">
+                            <button class="btn-wave" onclick="wsZoomIn()" title="Zoom In">+</button>
+                            <button class="btn-wave" onclick="wsZoomOut()" title="Zoom Out">−</button>
+                            <button class="btn-wave" onclick="wsZoomFit()" title="Fit to view">Fit</button>
+                        </div>
+                    </div>
+
                     <p id="phn-no-file">No PHN file found for this recording</p>
                     <div class="current-label-badge" id="label-badge">Not yet labeled</div>
                 </div>
@@ -475,12 +524,175 @@
     </div>
 
     <script>
-        const audioPlayer = document.getElementById('audioPlayer');
-
         let allFiles = [];       // [{name, rel_path, url, prompt, speaker, session, mic_type, label}]
         let currentIndex = -1;
         let currentFilter = 'all';
         let searchQuery = '';
+
+        // ----------------------------------------------------------------
+        // WaveSurfer setup
+        // ----------------------------------------------------------------
+
+        let wavesurfer = null;
+        let currentRegion = null;   // user drag-selected region
+        let phnRegionIds = new Set();
+        let currentZoom = 50;
+
+        function initWaveSurfer() {
+            if (wavesurfer) {
+                wavesurfer.destroy();
+                wavesurfer = null;
+            }
+            wavesurfer = WaveSurfer.create({
+                container: '#waveform',
+                waveColor: '#4F4A85',
+                progressColor: '#383351',
+                height: 128,
+                normalize: true,
+                backend: 'WebAudio',
+                plugins: [
+                    WaveSurfer.regions.create({
+                        regions: [],
+                        dragSelection: { slop: 5 }
+                    })
+                ]
+            });
+
+            wavesurfer.on('region-created', region => {
+                // Ignore PHN regions added programmatically
+                if (phnRegionIds.has(region.id)) return;
+                // Keep only one user-selected region
+                if (currentRegion) currentRegion.remove();
+                currentRegion = region;
+                document.getElementById('btn-play-sel').disabled = false;
+            });
+
+            wavesurfer.on('region-removed', region => {
+                if (currentRegion && currentRegion.id === region.id) {
+                    currentRegion = null;
+                    document.getElementById('btn-play-sel').disabled = true;
+                }
+            });
+
+            wavesurfer.on('play', () => {
+                document.getElementById('btn-play').textContent = '⏸ Pause';
+            });
+            wavesurfer.on('pause', () => {
+                document.getElementById('btn-play').textContent = '▶ Play';
+            });
+            wavesurfer.on('finish', () => {
+                document.getElementById('btn-play').textContent = '▶ Play';
+                // Auto-advance to next unlabeled file
+                if (currentIndex >= 0) {
+                    const next = nextUnlabeled(currentIndex);
+                    if (next !== -1) playAt(next);
+                }
+            });
+        }
+
+        function addPhnRegions(phnData) {
+            const totalSamples = phnData.total_samples;
+            const duration = wavesurfer.getDuration();
+            if (!totalSamples || !duration) return;
+
+            phnData.segments.forEach(seg => {
+                const start = (seg.start / totalSamples) * duration;
+                const end   = (seg.end   / totalSamples) * duration;
+                const color = seg.is_speech
+                    ? 'rgba(74,127,212,0.25)'
+                    : 'rgba(255,255,255,0.03)';
+                const reg = wavesurfer.regions.add({
+                    start, end, color,
+                    drag: false, resize: false,
+                });
+                phnRegionIds.add(reg.id);
+            });
+
+            document.getElementById('phn-badge').style.display = 'inline-block';
+        }
+
+        async function loadPhnRegions(rel_path) {
+            try {
+                const res  = await fetch(`/get_phn/${rel_path.replace(/\\/g, '/')}`);
+                const data = await res.json();
+                if (!data.error && data.segments && data.segments.length > 0) {
+                    addPhnRegions(data);
+                    document.getElementById('phn-no-file').style.display = 'none';
+                } else {
+                    document.getElementById('phn-no-file').style.display = 'block';
+                }
+            } catch (e) {
+                console.warn('PHN fetch failed:', e);
+            }
+        }
+
+        function wsLoadAudio(url, hasPhn, relPathOrPhnData) {
+            // Reset state for new audio
+            currentRegion = null;
+            phnRegionIds.clear();
+            document.getElementById('phn-badge').style.display = 'none';
+            document.getElementById('phn-no-file').style.display = 'none';
+            document.getElementById('btn-play-sel').disabled = true;
+            document.getElementById('btn-play').textContent = '▶ Play';
+
+            if (!wavesurfer) initWaveSurfer();
+            wavesurfer.regions.clear();
+            wavesurfer.load(url);
+
+            wavesurfer.once('ready', async () => {
+                document.getElementById('waveform-controls').style.display = 'flex';
+                wsZoomFit();
+                wavesurfer.play().catch(() => {});
+
+                if (hasPhn) {
+                    if (typeof relPathOrPhnData === 'string') {
+                        // Dataset file: fetch PHN from server
+                        await loadPhnRegions(relPathOrPhnData);
+                    } else if (relPathOrPhnData && relPathOrPhnData.segments) {
+                        // Uploaded file: PHN data already in memory
+                        addPhnRegions(relPathOrPhnData);
+                    }
+                }
+            });
+        }
+
+        // Waveform transport controls
+        function wsPlayPause() {
+            if (!wavesurfer) return;
+            wavesurfer.playPause();
+        }
+
+        function wsStop() {
+            if (!wavesurfer) return;
+            wavesurfer.stop();
+        }
+
+        function wsPlaySelection() {
+            if (!wavesurfer || !currentRegion) return;
+            currentRegion.play();
+        }
+
+        function wsZoomIn() {
+            if (!wavesurfer) return;
+            currentZoom = Math.min(currentZoom * 2, 2000);
+            wavesurfer.zoom(currentZoom);
+        }
+
+        function wsZoomOut() {
+            if (!wavesurfer) return;
+            currentZoom = Math.max(currentZoom / 2, 1);
+            wavesurfer.zoom(currentZoom);
+        }
+
+        function wsZoomFit() {
+            if (!wavesurfer) return;
+            const duration = wavesurfer.getDuration();
+            if (duration > 0) {
+                const containerWidth = document.getElementById('waveform').clientWidth;
+                currentZoom = Math.max(1, containerWidth / duration);
+                wavesurfer.zoom(currentZoom);
+            }
+        }
 
         // ----------------------------------------------------------------
         // Dataset loading
@@ -493,7 +705,7 @@
             try {
                 const fd = new FormData();
                 fd.append('torgo_path', path);
-                const res = await fetch('/load_torgo', { method: 'POST', body: fd });
+                const res  = await fetch('/load_torgo', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (data.success) {
                     allFiles = data.files;
@@ -527,13 +739,9 @@
             currentIndex = index;
             const f = allFiles[index];
 
-            audioPlayer.src = f.url;
-            audioPlayer.play().catch(() => {});  // autoplay may be blocked on first load
-
             document.getElementById('np-filename').textContent = f.rel_path.replace(/\\/g, '/');
-            document.getElementById('prompt-box').textContent = f.prompt || '(no prompt)';
+            document.getElementById('prompt-box').textContent  = f.prompt || '(no prompt)';
 
-            // Metadata badges
             const metaEl = document.getElementById('np-meta');
             metaEl.innerHTML = '';
             [f.speaker, f.session, f.mic_type].filter(Boolean).forEach(t => {
@@ -546,15 +754,7 @@
             highlightPlaylist();
             scrollToIndex(index);
 
-            // PHN timeline
-            if (f.has_phn) {
-                fetchAndDrawPhn(f.rel_path);
-            } else {
-                phnData = null;
-                stopPhnAnim();
-                document.getElementById('phn-canvas').style.display = 'none';
-                document.getElementById('phn-no-file').style.display = 'none';
-            }
+            wsLoadAudio(f.url, f.has_phn, f.rel_path);
         }
 
         function setLabelBadge(label) {
@@ -571,7 +771,7 @@
             if (currentIndex < 0) return;
             const f = allFiles[currentIndex];
             try {
-                const res = await fetch('/save_label', {
+                const res  = await fetch('/save_label', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ rel_path: f.rel_path, label })
@@ -582,7 +782,6 @@
                     updateProgress(data.labeled, data.total);
                     setLabelBadge(label);
                     refreshItem(currentIndex);
-                    // Jump to next unlabeled
                     const next = nextUnlabeled(currentIndex);
                     if (next !== -1) playAt(next);
                 }
@@ -603,7 +802,7 @@
             for (let i = 0; i < from; i++) {
                 if (!allFiles[i].label) return i;
             }
-            return -1;  // all labeled
+            return -1;
         }
 
         // ----------------------------------------------------------------
@@ -613,7 +812,7 @@
         function updateProgress(labeled, total) {
             const pct = total > 0 ? Math.round((labeled / total) * 100) : 0;
             document.getElementById('progress-text').textContent = `${labeled} / ${total} labeled`;
-            document.getElementById('progress-pct').textContent = `${pct}%`;
+            document.getElementById('progress-pct').textContent  = `${pct}%`;
             document.getElementById('progress-fill').style.width = `${pct}%`;
         }
 
@@ -626,7 +825,9 @@
             pl.innerHTML = '';
             const visible = filteredFiles();
             document.getElementById('sidebar-count').textContent =
-                visible.length === allFiles.length ? `${allFiles.length} files` : `${visible.length} / ${allFiles.length}`;
+                visible.length === allFiles.length
+                    ? `${allFiles.length} files`
+                    : `${visible.length} / ${allFiles.length}`;
 
             if (visible.length === 0) {
                 pl.innerHTML = '<li style="color:#444; cursor:default; text-align:center; padding:20px;">No files match</li>';
@@ -721,14 +922,14 @@
             if (!file) { document.getElementById('log-message').textContent = 'Select a file first.'; return; }
             const fd = new FormData();
             fd.append('log_file', file);
-            const res = await fetch('/upload_log', { method: 'POST', body: fd });
+            const res  = await fetch('/upload_log', { method: 'POST', body: fd });
             const data = await res.json();
             document.getElementById('log-message').textContent = data.message;
         }
 
         async function loadLogFromPath() {
             const path = document.getElementById('log_path_input').value;
-            const res = await fetch('/load_log_from_path', {
+            const res  = await fetch('/load_log_from_path', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: `log_path=${encodeURIComponent(path)}`
@@ -764,27 +965,19 @@
                 msg.textContent = `Uploaded: ${data.file.name}`;
                 showPlayerUI();
 
-                // Play immediately — treat as a standalone file (not in playlist)
-                const f = data.file;
-                audioPlayer.src = f.url;
-                audioPlayer.play().catch(() => {});
-                document.getElementById('np-filename').textContent = f.name;
+                // currentIndex stays -1 (not part of playlist)
+                document.getElementById('np-filename').textContent = data.file.name;
                 document.getElementById('prompt-box').textContent  = '(uploaded file)';
                 document.getElementById('np-meta').innerHTML = '';
                 setLabelBadge(null);
 
-                // PHN timeline
-                if (f.phn && f.phn.segments && f.phn.segments.length > 0) {
-                    phnData = f.phn;
-                    initPhnCanvas();
-                    drawPhn();
-                    document.getElementById('phn-canvas').style.display = 'block';
-                    document.getElementById('phn-no-file').style.display = 'none';
-                } else {
-                    phnData = null;
-                    stopPhnAnim();
-                    document.getElementById('phn-canvas').style.display = 'none';
-                    document.getElementById('phn-no-file').style.display = phnInput.files[0] ? 'block' : 'none';
+                const phnData = data.file.phn;
+                const hasPhn  = !!(phnData && phnData.segments && phnData.segments.length > 0);
+                wsLoadAudio(data.file.url, hasPhn, phnData || null);
+
+                if (!hasPhn && phnInput.files[0]) {
+                    // PHN was uploaded but failed to parse
+                    document.getElementById('phn-no-file').style.display = 'block';
                 }
             } catch (e) {
                 msg.textContent = 'Upload failed.';
@@ -793,179 +986,29 @@
         }
 
         // ----------------------------------------------------------------
-        // PHN timeline
-        // ----------------------------------------------------------------
-
-        const DPR = window.devicePixelRatio || 1;
-        const PHN_LABEL_W = 40;   // px reserved for the "PHN" label
-        const PHN_TRACK_H = 28;   // px height of the track
-        const PHN_PAD = 4;        // px top/bottom padding
-
-        let phnData = null;
-        let rafId = null;
-
-        async function fetchAndDrawPhn(rel_path) {
-            const canvas = document.getElementById('phn-canvas');
-            const noFile = document.getElementById('phn-no-file');
-            canvas.style.display = 'none';
-            noFile.style.display = 'none';
-            phnData = null;
-            stopPhnAnim();
-
-            try {
-                const res = await fetch(`/get_phn/${rel_path.replace(/\\/g, '/')}`);
-                const data = await res.json();
-                if (data.error || !data.segments || data.segments.length === 0) {
-                    noFile.style.display = 'block';
-                    return;
-                }
-                phnData = data;
-                initPhnCanvas();
-                drawPhn();
-                canvas.style.display = 'block';
-            } catch (e) {
-                console.warn('PHN fetch failed:', e);
-            }
-        }
-
-        function initPhnCanvas() {
-            const canvas = document.getElementById('phn-canvas');
-            const W = canvas.parentElement.offsetWidth;
-            const H = PHN_TRACK_H + PHN_PAD * 2;
-            canvas.width  = W * DPR;
-            canvas.height = H * DPR;
-            canvas.style.width  = W + 'px';
-            canvas.style.height = H + 'px';
-        }
-
-        function drawPhn() {
-            if (!phnData) return;
-            const canvas = document.getElementById('phn-canvas');
-            const ctx = canvas.getContext('2d');
-            const W = canvas.width  / DPR;
-            const H = canvas.height / DPR;
-            const trackW = W - PHN_LABEL_W;
-            const total  = phnData.total_samples;
-
-            ctx.save();
-            ctx.scale(DPR, DPR);
-            ctx.clearRect(0, 0, W, H);
-
-            // Row label
-            ctx.fillStyle = '#555';
-            ctx.font = '10px system-ui';
-            ctx.textAlign = 'right';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('PHN', PHN_LABEL_W - 6, H / 2);
-
-            // Track background
-            ctx.fillStyle = '#111827';
-            ctx.fillRect(PHN_LABEL_W, PHN_PAD, trackW, PHN_TRACK_H);
-
-            // Segments
-            phnData.segments.forEach(seg => {
-                const x = PHN_LABEL_W + (seg.start / total) * trackW;
-                const w = Math.max(1, ((seg.end - seg.start) / total) * trackW);
-                ctx.fillStyle = seg.is_speech ? '#4a7fd4' : '#1e2535';
-                ctx.fillRect(x, PHN_PAD, w, PHN_TRACK_H);
-
-                // Phoneme label — only if segment is wide enough
-                if (w > 14) {
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.rect(x, PHN_PAD, w, PHN_TRACK_H);
-                    ctx.clip();
-                    ctx.fillStyle = seg.is_speech ? 'rgba(255,255,255,0.72)' : '#3a4060';
-                    ctx.font = '9px monospace';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(seg.label, x + w / 2, PHN_PAD + PHN_TRACK_H / 2);
-                    ctx.restore();
-                }
-            });
-
-            // Playhead
-            if (audioPlayer.duration > 0) {
-                const px = PHN_LABEL_W + (audioPlayer.currentTime / audioPlayer.duration) * trackW;
-                ctx.strokeStyle = '#e94560';
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.moveTo(px, PHN_PAD - 2);
-                ctx.lineTo(px, PHN_PAD + PHN_TRACK_H + 2);
-                ctx.stroke();
-            }
-
-            ctx.restore();
-        }
-
-        function startPhnAnim() {
-            if (rafId) cancelAnimationFrame(rafId);
-            function loop() {
-                drawPhn();
-                if (!audioPlayer.paused) rafId = requestAnimationFrame(loop);
-            }
-            loop();
-        }
-
-        function stopPhnAnim() {
-            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-            drawPhn();
-        }
-
-        // Click on PHN timeline to seek
-        document.getElementById('phn-canvas').addEventListener('click', e => {
-            if (!phnData || !audioPlayer.duration) return;
-            const canvas = document.getElementById('phn-canvas');
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left - PHN_LABEL_W;
-            const trackW = rect.width - PHN_LABEL_W;
-            if (x < 0 || x > trackW) return;
-            audioPlayer.currentTime = (x / trackW) * audioPlayer.duration;
-            drawPhn();
-        });
-
-        // Redraw on window resize
-        window.addEventListener('resize', () => {
-            if (phnData) { initPhnCanvas(); drawPhn(); }
-        });
-
-        audioPlayer.addEventListener('play',      startPhnAnim);
-        audioPlayer.addEventListener('pause',     stopPhnAnim);
-        audioPlayer.addEventListener('ended',     stopPhnAnim);
-        audioPlayer.addEventListener('seeked',    () => drawPhn());
-        audioPlayer.addEventListener('timeupdate', () => { if (audioPlayer.paused) drawPhn(); });
-
-        // ----------------------------------------------------------------
         // Keyboard shortcuts
         // ----------------------------------------------------------------
 
         document.addEventListener('keydown', e => {
             if (e.target.tagName === 'INPUT') return;
             switch (e.key) {
-                case 's': case 'S': e.preventDefault(); labelCurrent('speech'); break;
-                case 'x': case 'X': e.preventDefault(); labelCurrent('silence'); break;
-                case 'ArrowRight': e.preventDefault(); skipFile(); break;
+                case 's': case 'S':
+                    e.preventDefault(); labelCurrent('speech'); break;
+                case 'x': case 'X':
+                    e.preventDefault(); labelCurrent('silence'); break;
+                case 'ArrowRight':
+                    e.preventDefault(); skipFile(); break;
                 case 'ArrowLeft':
                     e.preventDefault();
                     if (currentIndex > 0) playAt(currentIndex - 1);
                     break;
                 case ' ':
-                    e.preventDefault();
-                    if (audioPlayer.paused) audioPlayer.play().catch(() => {});
-                    else audioPlayer.pause();
-                    break;
+                    e.preventDefault(); wsPlayPause(); break;
                 case 'r': case 'R':
                     e.preventDefault();
-                    audioPlayer.currentTime = 0;
-                    audioPlayer.play().catch(() => {});
+                    if (wavesurfer) { wavesurfer.seekTo(0); wavesurfer.play().catch(() => {}); }
                     break;
             }
-        });
-
-        // Auto-advance when a clip ends
-        audioPlayer.addEventListener('ended', () => {
-            const next = nextUnlabeled(currentIndex);
-            if (next !== -1) playAt(next);
         });
 
         // ----------------------------------------------------------------
@@ -982,7 +1025,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                const res = await fetch('/status');
+                const res  = await fetch('/status');
                 const data = await res.json();
                 if (data.torgoRoot) {
                     document.getElementById('torgo-path').value = data.torgoRoot;
