@@ -444,6 +444,8 @@
                         <button class="btn-wave" onclick="wsStop()">&#9632; Stop</button>
                         <button class="btn-wave" id="btn-play-sel" onclick="wsPlaySelection()" disabled>▶ Selection</button>
                         <span id="phn-badge">PHN</span>
+                        <button class="btn-wave" id="btn-run-vad" onclick="runVad()">Run WebRTC VAD</button>
+                        <button class="btn-wave" id="btn-vad-toggle" onclick="toggleVad()" style="display:none;">VAD overlay</button>
                         <div class="zoom-group">
                             <button class="btn-wave" onclick="wsZoomIn()" title="Zoom In">+</button>
                             <button class="btn-wave" onclick="wsZoomOut()" title="Zoom Out">−</button>
@@ -534,9 +536,13 @@
         // ----------------------------------------------------------------
 
         let wavesurfer = null;
-        let currentRegion = null;   // user drag-selected region
+        let currentRegion = null;       // user drag-selected region
         let phnRegionIds = new Set();
         let addingPhnRegions = false;   // suppresses region-created handler during PHN load
+        let vadRegions = [];            // WaveSurfer region objects for VAD
+        let addingVadRegions = false;
+        let vadVisible = false;
+        let currentUploadedFilename = null;
         let currentZoom = 50;
 
         function initWaveSurfer() {
@@ -560,12 +566,9 @@
             });
 
             wavesurfer.on('region-created', region => {
-                // Ignore regions being added programmatically as PHN boundaries
-                if (addingPhnRegions) {
-                    phnRegionIds.add(region.id);
-                    return;
-                }
-                // Keep only one user-selected region
+                if (addingPhnRegions) { phnRegionIds.add(region.id); return; }
+                if (addingVadRegions) { vadRegions.push(region); return; }
+                // User drag-selected region — keep only one
                 if (currentRegion) currentRegion.remove();
                 currentRegion = region;
                 document.getElementById('btn-play-sel').disabled = false;
@@ -628,10 +631,99 @@
             }
         }
 
+        function addVadRegions(segments) {
+            // Remove any existing VAD regions
+            vadRegions.forEach(r => r.remove());
+            vadRegions = [];
+
+            addingVadRegions = true;
+            segments.forEach(seg => {
+                if (!seg.is_speech) return;  // only overlay speech regions
+                wavesurfer.regions.add({
+                    start: seg.start,
+                    end: seg.end,
+                    color: 'rgba(255,140,0,0.45)',
+                    drag: false,
+                    resize: false,
+                });
+            });
+            addingVadRegions = false;
+
+            vadVisible = true;
+            const toggleBtn = document.getElementById('btn-vad-toggle');
+            toggleBtn.style.display = 'inline-block';
+            toggleBtn.classList.add('active');
+            toggleBtn.textContent = 'VAD overlay ✓';
+        }
+
+        function toggleVad() {
+            vadVisible = !vadVisible;
+            vadRegions.forEach(r => {
+                if (r.element) r.element.style.display = vadVisible ? 'block' : 'none';
+            });
+            const btn = document.getElementById('btn-vad-toggle');
+            btn.classList.toggle('active', vadVisible);
+            btn.textContent = vadVisible ? 'VAD overlay ✓' : 'VAD overlay';
+        }
+
+        async function runVad() {
+            if (!wavesurfer) return;
+            const btn = document.getElementById('btn-run-vad');
+            btn.textContent = 'Running…';
+            btn.disabled = true;
+
+            let body;
+            if (currentIndex >= 0) {
+                body = { rel_path: allFiles[currentIndex].rel_path };
+            } else if (currentUploadedFilename) {
+                body = { uploaded: currentUploadedFilename };
+            } else {
+                btn.textContent = 'Run WebRTC VAD';
+                btn.disabled = false;
+                return;
+            }
+
+            try {
+                const res  = await fetch('/run_vad', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (data.error) {
+                    btn.textContent = 'VAD failed';
+                    console.error('[VAD]', data.error);
+                    alert('VAD error: ' + data.error);
+                    return;
+                }
+                addVadRegions(data.segments);
+                btn.textContent = 'Run WebRTC VAD';
+            } catch (e) {
+                btn.textContent = 'VAD failed';
+                console.error('[VAD]', e);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function resetVadState() {
+            vadRegions = [];
+            addingVadRegions = false;
+            vadVisible = false;
+            const toggleBtn = document.getElementById('btn-vad-toggle');
+            if (toggleBtn) {
+                toggleBtn.style.display = 'none';
+                toggleBtn.classList.remove('active');
+            }
+            const runBtn = document.getElementById('btn-run-vad');
+            if (runBtn) runBtn.textContent = 'Run WebRTC VAD';
+        }
+
         function wsLoadAudio(url, hasPhn, relPathOrPhnData) {
             // Reset state for new audio
             currentRegion = null;
             phnRegionIds.clear();
+            resetVadState();
             document.getElementById('phn-badge').style.display = 'none';
             document.getElementById('phn-no-file').style.display = 'none';
             document.getElementById('btn-play-sel').disabled = true;
@@ -739,6 +831,7 @@
         function playAt(index) {
             if (index < 0 || index >= allFiles.length) return;
             currentIndex = index;
+            currentUploadedFilename = null;
             const f = allFiles[index];
 
             document.getElementById('np-filename').textContent = f.rel_path.replace(/\\/g, '/');
@@ -965,6 +1058,7 @@
                 if (!data.success) { msg.textContent = data.message; return; }
 
                 msg.textContent = `Uploaded: ${data.file.name}`;
+                currentUploadedFilename = data.file.name;
                 showPlayerUI();
 
                 // currentIndex stays -1 (not part of playlist)

@@ -2,6 +2,8 @@ import os
 import re
 import csv
 import io
+import wave
+import audioop
 import tempfile
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
@@ -122,6 +124,109 @@ def find_torgo_files(root_dir):
                 'mic_type': parts[2] if len(parts) > 2 else None,
             })
     return files
+
+
+def run_vad(wav_path, aggressiveness=2):
+    """
+    Run WebRTC VAD on a WAV file.
+    Returns a list of {start, end, is_speech} dicts with times in seconds.
+    Requires: 16-bit PCM WAV at 8/16/32/48 kHz.
+    """
+    try:
+        import webrtcvad
+    except ImportError:
+        raise RuntimeError('webrtcvad not installed — run: pip install webrtcvad-wheels')
+
+    vad = webrtcvad.Vad(aggressiveness)
+
+    with wave.open(wav_path, 'rb') as wf:
+        rate = wf.getframerate()
+        channels = wf.getnchannels()
+        width = wf.getsampwidth()
+        pcm = wf.readframes(wf.getnframes())
+
+    if width != 2:
+        raise ValueError(f'WAV must be 16-bit PCM (got {width * 8}-bit)')
+    if rate not in (8000, 16000, 32000, 48000):
+        raise ValueError(f'Unsupported sample rate {rate} Hz — need 8/16/32/48 kHz')
+    if channels == 2:
+        pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+    elif channels > 2:
+        raise ValueError(f'Unsupported channel count {channels}')
+
+    FRAME_MS = 20
+    frame_bytes = int(rate * FRAME_MS / 1000) * 2  # 16-bit = 2 bytes/sample
+
+    # Per-frame VAD labels
+    labels = []
+    for i in range(0, len(pcm) - frame_bytes + 1, frame_bytes):
+        labels.append(vad.is_speech(pcm[i:i + frame_bytes], rate))
+
+    if not labels:
+        return []
+
+    total_dur = len(pcm) / (rate * 2)
+
+    # Smooth: fill silence gaps shorter than 300 ms between speech regions
+    gap_limit = max(1, int(300 / FRAME_MS))
+    i = 0
+    while i < len(labels):
+        if not labels[i]:
+            j = i
+            while j < len(labels) and not labels[j]:
+                j += 1
+            # Bridge gap if it's short and bordered by speech on both sides
+            if (j - i) <= gap_limit and i > 0 and j < len(labels):
+                for k in range(i, j):
+                    labels[k] = True
+            i = j + 1
+        else:
+            i += 1
+
+    # Build segments from label runs
+    segments = []
+    cur_speech = labels[0]
+    cur_start = 0.0
+    for idx, is_speech in enumerate(labels):
+        if is_speech != cur_speech:
+            segments.append({
+                'start': round(cur_start, 4),
+                'end': round(idx * FRAME_MS / 1000.0, 4),
+                'is_speech': cur_speech,
+            })
+            cur_speech = is_speech
+            cur_start = idx * FRAME_MS / 1000.0
+    segments.append({'start': round(cur_start, 4), 'end': round(total_dur, 4), 'is_speech': cur_speech})
+
+    return segments
+
+
+@app.route('/run_vad', methods=['POST'])
+def api_run_vad():
+    """Run WebRTC VAD on a loaded dataset file or an uploaded file."""
+    data = request.get_json()
+    rel_path = data.get('rel_path')
+    uploaded = data.get('uploaded')
+
+    if rel_path:
+        root = torgo_root or current_directory
+        if not root:
+            return jsonify({'error': 'No dataset loaded'})
+        wav_path = os.path.join(root, rel_path.replace('\\', '/'))
+    elif uploaded:
+        wav_path = os.path.join(UPLOAD_DIR, os.path.basename(uploaded))
+    else:
+        return jsonify({'error': 'No file specified'})
+
+    if not os.path.exists(wav_path):
+        return jsonify({'error': f'File not found: {wav_path}'})
+
+    try:
+        segments = run_vad(wav_path)
+        return jsonify({'segments': segments})
+    except Exception as e:
+        app.logger.error(f'VAD error on {wav_path}: {e}')
+        return jsonify({'error': str(e)})
 
 
 @app.route('/upload_audio', methods=['POST'])
