@@ -205,15 +205,35 @@ def run_silero_vad(wav_path):
     """
     Run Silero VAD on a WAV file.
     Returns a list of {start, end, is_speech} dicts with times in seconds.
+    Loads audio via stdlib wave + numpy to avoid torchaudio's broken read_audio (v2.9+).
     """
     try:
-        from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
-    except ImportError:
-        raise RuntimeError('silero-vad not installed — run: pip install silero-vad onnxruntime')
+        from silero_vad import load_silero_vad, get_speech_timestamps
+        import torch
+        import numpy as np
+    except ImportError as e:
+        raise RuntimeError(f'Missing dependency: {e}')
+
+    with wave.open(wav_path, 'rb') as wf:
+        rate     = wf.getframerate()
+        channels = wf.getnchannels()
+        width    = wf.getsampwidth()
+        pcm      = wf.readframes(wf.getnframes())
+
+    if width != 2:
+        raise ValueError(f'WAV must be 16-bit PCM (got {width * 8}-bit)')
+    if channels == 2:
+        pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+    elif channels > 2:
+        raise ValueError(f'Unsupported channel count {channels}')
+    if rate != 16000:
+        pcm, _ = audioop.ratecv(pcm, 2, 1, rate, 16000, None)
+
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    wav_tensor = torch.from_numpy(samples)
 
     model = load_silero_vad()
-    wav = read_audio(wav_path)
-    timestamps = get_speech_timestamps(wav, model, return_seconds=True)
+    timestamps = get_speech_timestamps(wav_tensor, model, sampling_rate=16000, return_seconds=True)
     return [
         {'start': round(float(t['start']), 4), 'end': round(float(t['end']), 4), 'is_speech': True}
         for t in timestamps
