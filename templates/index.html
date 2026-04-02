@@ -3,406 +3,726 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Python Audio Player with WER Log</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>Torgo Speech Labeler</title>
     <style>
-        /* Basic inline styles for quick setup - consider moving to style.css */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            font-family: Arial, sans-serif;
-            background-color: #f4f4f4;
-            margin: 20px;
-            color: #333;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #12151e;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
-        .container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0 0 0 / 10%);
-            max-width: 800px;
-            margin: 0 auto;
+
+        /* ---- Header ---- */
+        header {
+            background: #1a1f2e;
+            border-bottom: 1px solid #2a3048;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-shrink: 0;
         }
-        h1, h2 {
-            color: #0056b3;
-            text-align: center;
-            margin-bottom: 20px;
+        header h1 { font-size: 1.1em; color: #e94560; white-space: nowrap; }
+        .dataset-row { display: flex; gap: 8px; flex: 1; }
+        .dataset-row input {
+            flex: 1;
+            padding: 7px 12px;
+            background: #0e1420;
+            border: 1px solid #2a3048;
+            border-radius: 6px;
+            color: #ddd;
+            font-size: 14px;
         }
-        .section-box { /* Generic box for sections */
-            margin-bottom: 20px;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-        }
-        input[type="text"], input[type="file"] {
-            width: calc(100% - 130px);
-            padding: 8px;
-            margin-right: 10px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-        button {
-            background-color: #007bff;
-            color: white;
-            padding: 10px 15px;
+        .dataset-row input::placeholder { color: #555; }
+        #header-msg { font-size: 13px; color: #666; white-space: nowrap; }
+
+        /* ---- Buttons ---- */
+        .btn {
+            padding: 7px 14px;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 16px;
-            margin-top: 5px;
+            font-size: 13px;
+            font-weight: 600;
+            transition: filter 0.15s;
+            white-space: nowrap;
         }
-        button:hover {
-            background-color: #0056b3;
+        .btn:hover { filter: brightness(1.15); }
+        .btn:disabled { opacity: 0.4; cursor: default; }
+        .btn-load   { background: #e94560; color: #fff; }
+        .btn-speech { background: #27ae60; color: #fff; font-size: 1em; padding: 10px 24px; }
+        .btn-silence { background: #c0392b; color: #fff; font-size: 1em; padding: 10px 24px; }
+        .btn-skip   { background: #2c3555; color: #aaa; }
+        .btn-export { background: #1e2a40; color: #7fb3f5; border: 1px solid #2a3a60; width: 100%; }
+
+        /* ---- Body layout ---- */
+        .body-layout {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            flex: 1;
+            overflow: hidden;
         }
-        #playlist {
-            list-style-type: none;
-            padding: 0;
-            max-height: 350px;
+
+        /* ---- Main panel ---- */
+        .main-panel {
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
             overflow-y: auto;
-            border: 1px solid #eee;
-            border-radius: 4px;
-            background-color: #fff;
         }
-        #playlist li {
-            padding: 10px;
-            border-bottom: 1px solid #eee;
+
+        /* Progress */
+        .progress-wrap { display: none; }
+        .progress-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 6px;
+        }
+        .progress-bg {
+            height: 6px;
+            background: #1e2a40;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #27ae60, #2ecc71);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        /* Now-playing card */
+        .now-playing-card {
+            background: #1a1f2e;
+            border: 1px solid #2a3048;
+            border-radius: 10px;
+            padding: 18px;
+        }
+        .np-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 4px; }
+        .np-filename { font-size: 14px; color: #ddd; word-break: break-all; margin-bottom: 4px; }
+        .np-meta { font-size: 12px; color: #555; display: flex; gap: 10px; margin-bottom: 10px; }
+        .np-meta span { background: #1e2a40; padding: 2px 8px; border-radius: 10px; }
+        .prompt-box {
+            font-size: 1.05em;
+            color: #7fb3f5;
+            font-style: italic;
+            background: rgba(127,179,245,0.07);
+            border-left: 3px solid #3a5a90;
+            padding: 8px 12px;
+            border-radius: 0 6px 6px 0;
+            min-height: 36px;
+        }
+        audio {
+            width: 100%;
+            margin-top: 14px;
+            border-radius: 6px;
+        }
+        .current-label-badge {
+            margin-top: 10px;
+            text-align: center;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            background: rgba(255,255,255,0.04);
+            color: #555;
+        }
+        .current-label-badge.speech  { background: rgba(39,174,96,0.18);  color: #2ecc71; }
+        .current-label-badge.silence { background: rgba(192,57,43,0.18);  color: #e74c3c; }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 40px 0;
+            color: #444;
+        }
+        .empty-state .icon { font-size: 2.5em; margin-bottom: 10px; }
+
+        /* Label buttons row */
+        .label-row {
+            display: none;
+            gap: 12px;
+            justify-content: center;
+            align-items: center;
+        }
+        .label-btn-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .key-hint { font-size: 11px; color: #555; }
+
+        /* WER log collapsible */
+        details {
+            background: #1a1f2e;
+            border: 1px solid #2a3048;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        summary {
+            padding: 12px 16px;
             cursor: pointer;
+            font-size: 13px;
+            color: #666;
+            list-style: none;
+            user-select: none;
+        }
+        summary::before { content: '▶  '; font-size: 10px; }
+        details[open] summary::before { content: '▼  '; }
+        .details-body { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 8px; }
+        .details-body input[type="text"],
+        .details-body input[type="file"] {
+            padding: 7px 10px;
+            background: #0e1420;
+            border: 1px solid #2a3048;
+            border-radius: 5px;
+            color: #ddd;
+            font-size: 13px;
+            width: 100%;
+        }
+        .details-body label { font-size: 12px; color: #777; }
+        #log-message { font-size: 12px; color: #888; }
+
+        /* ---- Sidebar ---- */
+        .sidebar {
+            background: #0e1420;
+            border-left: 1px solid #1e2535;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .sidebar-top {
+            padding: 12px;
+            border-bottom: 1px solid #1e2535;
+            flex-shrink: 0;
+        }
+        .sidebar-top-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            transition: background-color 0.2s ease;
+            margin-bottom: 8px;
         }
-        #playlist li:last-child {
-            border-bottom: none;
-        }
-        #playlist li:hover {
-            background-color: #e9e9e9;
-        }
-        #playlist li.playing {
-            background-color: #e0ffe0;
-            font-weight: bold;
-        }
-        .transcription-info {
-            margin-top: 15px;
-            padding: 15px;
-            background-color: #eaf6ff;
-            border: 1px solid #b3e0ff;
-            border-radius: 5px;
-        }
-        .transcription-info p {
-            margin: 8px 0;
-            line-height: 1.4;
-        }
-        .audio-controls {
-            text-align: center;
-        }
-        #audioPlayer {
+        .sidebar-top-row h3 { font-size: 13px; color: #888; }
+        #sidebar-count { font-size: 12px; color: #555; }
+        .search-box {
             width: 100%;
-            margin-bottom: 15px;
+            padding: 6px 10px;
+            background: #151c2c;
+            border: 1px solid #1e2535;
+            border-radius: 5px;
+            color: #ccc;
+            font-size: 12px;
         }
-        #current-song {
-            font-size: 1.2em;
-            color: #007bff;
-            font-weight: bold;
+        .filter-row {
+            display: flex;
+            gap: 4px;
+            padding: 8px 12px;
+            border-bottom: 1px solid #1e2535;
+            flex-shrink: 0;
         }
-        .wer-display {
-            font-size: 0.8em;
-            color: #555;
-            margin-left: 10px;
-            padding: 2px 5px;
-            background-color: #f0f0f0;
+        .filter-btn {
+            padding: 3px 9px;
+            border-radius: 10px;
+            font-size: 11px;
+            cursor: pointer;
+            border: 1px solid #2a3048;
+            background: transparent;
+            color: #666;
+            transition: all 0.1s;
+        }
+        .filter-btn.active { background: #1e2a40; color: #ccc; border-color: #3a5060; }
+
+        /* Playlist */
+        #playlist {
+            list-style: none;
+            overflow-y: auto;
+            flex: 1;
+        }
+        #playlist li {
+            padding: 9px 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background 0.1s;
+        }
+        #playlist li:hover { background: rgba(255,255,255,0.04); }
+        #playlist li.playing { background: rgba(233,69,96,0.1); border-left: 3px solid #e94560; padding-left: 9px; }
+        .dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #2a3048;
+        }
+        #playlist li.s-speech  .dot { background: #27ae60; }
+        #playlist li.s-silence .dot { background: #c0392b; }
+        .file-info { flex: 1; min-width: 0; }
+        .file-name { color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .file-sub  { font-size: 11px; color: #444; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        /* Sidebar bottom */
+        .sidebar-bottom {
+            padding: 12px;
+            border-top: 1px solid #1e2535;
+            flex-shrink: 0;
+        }
+
+        /* ---- Shortcuts bar ---- */
+        .shortcuts-bar {
+            background: #0d1018;
+            border-top: 1px solid #1a1f2e;
+            padding: 5px 20px;
+            font-size: 11px;
+            color: #444;
+            display: flex;
+            gap: 14px;
+            flex-shrink: 0;
+        }
+        kbd {
+            background: #1a1f2e;
+            border: 1px solid #2a3048;
             border-radius: 3px;
+            padding: 0 5px;
+            color: #666;
+            font-family: monospace;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Python Network Audio Player</h1>
 
-        <div class="section-box log-upload-section">
-            <h2>Load WER Log File</h2>
-            <h3>Option 1: Upload File</h3>
-            <input type="file" id="logFileInput" accept=".txt">
-            <button onclick="uploadLogFile()">Upload Log</button>
-            <p id="log-message-upload"></p>
-            
-            <h3>Option 2: Specify Path on Server</h3>
-            <label for="log_path_input">Path:</label>
-            <input type="text" id="log_path_input" placeholder="/path/to/your/log.txt" size="50">
-            <button onclick="loadLogFromPath()">Load from Path</button>
-            <p id="log-message-path"></p>
+    <!-- Header -->
+    <header>
+        <h1>Torgo Labeler</h1>
+        <div class="dataset-row">
+            <input type="text" id="torgo-path" placeholder="Path to Torgo dataset (e.g. /data/Torgo or /data/Torgo/F01)">
+            <button class="btn btn-load" onclick="loadTorgo()">Load Dataset</button>
         </div>
+        <span id="header-msg"></span>
+    </header>
 
-        <div class="section-box directory-selection">
-            <h2>Select Audio Directory</h2>
-            <label for="directory_path">Enter Directory Path (e.g., `/path/to/your/music`):</label>
-            <input type="text" id="directory_path" placeholder="/path/to/your/music" size="50">
-            <button onclick="selectDirectory()">Load Directory</button>
-            <p id="directory-message"></p>
-        </div>
+    <!-- Body -->
+    <div class="body-layout">
 
-        <div class="section-box audio-controls">
-            <audio id="audioPlayer" controls></audio>
-            <p><strong>Now Playing:</strong> <span id="current-song">None</span></p>
-            <div id="transcription-display" class="transcription-info" style="display: none;">
-                <p><strong>Reference:</strong> <span id="ref-text"></span></p>
-                <p><strong>Prediction:</strong> <span id="pred-text"></span></p>
-                <p><strong>WER:</strong> <span id="wer-num"></span></p>
+        <!-- Main panel -->
+        <main class="main-panel">
+
+            <!-- Progress bar -->
+            <div class="progress-wrap" id="progress-wrap">
+                <div class="progress-stats">
+                    <span id="progress-text">0 / 0 labeled</span>
+                    <span id="progress-pct">0%</span>
+                </div>
+                <div class="progress-bg">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
             </div>
-            <button onclick="playCurrent()">Play</button>
-            <button onclick="pauseAudio()">Pause</button>
-            <button onclick="stopAudio()">Stop</button>
-            <button onclick="playNext()">Next</button>
-            <button onclick="playPrevious()">Previous</button>
-        </div>
 
-        <div class="section-box playlist-section">
-            <h2>Playlist</h2>
+            <!-- Now playing -->
+            <div class="now-playing-card">
+                <div class="empty-state" id="empty-state">
+                    <div class="icon">🎙</div>
+                    <p>Load a Torgo dataset above to start labeling</p>
+                </div>
+                <div id="player-content" style="display:none;">
+                    <div class="np-label">Now Playing</div>
+                    <div class="np-filename" id="np-filename">—</div>
+                    <div class="np-meta" id="np-meta"></div>
+                    <div class="prompt-box" id="prompt-box">—</div>
+                    <audio id="audioPlayer" controls></audio>
+                    <div class="current-label-badge" id="label-badge">Not yet labeled</div>
+                </div>
+            </div>
+
+            <!-- Label buttons -->
+            <div class="label-row" id="label-row">
+                <div class="label-btn-col">
+                    <button class="btn btn-speech" onclick="labelCurrent('speech')">Speech</button>
+                    <span class="key-hint">Press <kbd>S</kbd></span>
+                </div>
+                <div class="label-btn-col">
+                    <button class="btn btn-skip" onclick="skipFile()">Skip →</button>
+                    <span class="key-hint">Press <kbd>→</kbd></span>
+                </div>
+                <div class="label-btn-col">
+                    <button class="btn btn-silence" onclick="labelCurrent('silence')">Silence / Noise</button>
+                    <span class="key-hint">Press <kbd>X</kbd></span>
+                </div>
+            </div>
+
+            <!-- WER log (optional, collapsed by default) -->
+            <details>
+                <summary>WER Log — optional, for speech recognition comparison</summary>
+                <div class="details-body">
+                    <label>Upload log file:</label>
+                    <input type="file" id="logFileInput" accept=".txt">
+                    <button class="btn btn-skip" onclick="uploadLogFile()">Upload Log</button>
+                    <label style="margin-top:4px;">Or enter server path:</label>
+                    <input type="text" id="log_path_input" placeholder="/path/to/log.txt">
+                    <button class="btn btn-skip" onclick="loadLogFromPath()">Load from Path</button>
+                    <p id="log-message"></p>
+                </div>
+            </details>
+
+        </main>
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-top">
+                <div class="sidebar-top-row">
+                    <h3>Files</h3>
+                    <span id="sidebar-count">0 files</span>
+                </div>
+                <input type="text" class="search-box" id="search-box" placeholder="Search filename or prompt..." oninput="onSearch()">
+            </div>
+            <div class="filter-row">
+                <button class="filter-btn active" onclick="setFilter('all', this)">All</button>
+                <button class="filter-btn" onclick="setFilter('unlabeled', this)">Unlabeled</button>
+                <button class="filter-btn" onclick="setFilter('speech', this)">Speech</button>
+                <button class="filter-btn" onclick="setFilter('silence', this)">Silence</button>
+            </div>
             <ul id="playlist">
-                </ul>
-        </div>
+                <li style="color:#444; cursor:default; text-align:center; padding:20px;">No dataset loaded</li>
+            </ul>
+            <div class="sidebar-bottom">
+                <button class="btn btn-export" onclick="exportLabels()">Export Labels (CSV)</button>
+            </div>
+        </aside>
+
+    </div>
+
+    <!-- Keyboard shortcuts strip -->
+    <div class="shortcuts-bar">
+        <span><kbd>S</kbd> Speech</span>
+        <span><kbd>X</kbd> Silence</span>
+        <span><kbd>Space</kbd> Play/Pause</span>
+        <span><kbd>→</kbd> Next</span>
+        <span><kbd>←</kbd> Prev</span>
+        <span><kbd>R</kbd> Replay</span>
     </div>
 
     <script>
-        const directoryPathInput = document.getElementById('directory_path');
-        const directoryMessage = document.getElementById('directory-message');
-        const playlistElement = document.getElementById('playlist');
-        const currentSongElement = document.getElementById('current-song');
         const audioPlayer = document.getElementById('audioPlayer');
-        
-        const logFileInput = document.getElementById('logFileInput');
-        const logPathInput = document.getElementById('log_path_input');
-        const logMessageUpload = document.getElementById('log-message-upload');
-        const logMessagePath = document.getElementById('log-message-path');
 
-        const transcriptionDisplay = document.getElementById('transcription-display');
-        const refText = document.getElementById('ref-text');
-        const predText = document.getElementById('pred-text');
-        const werNum = document.getElementById('wer-num');
+        let allFiles = [];       // [{name, rel_path, url, prompt, speaker, session, mic_type, label}]
+        let currentIndex = -1;
+        let currentFilter = 'all';
+        let searchQuery = '';
 
-        let currentPlaylistData = []; 
-        let currentPlayingIndex = -1;
+        // ----------------------------------------------------------------
+        // Dataset loading
+        // ----------------------------------------------------------------
 
-        async function uploadLogFile() {
-            const file = logFileInput.files[0];
-            if (!file) {
-                logMessageUpload.textContent = 'Please select a log file.';
+        async function loadTorgo() {
+            const path = document.getElementById('torgo-path').value.trim();
+            if (!path) return;
+            setHeaderMsg('Loading…');
+            try {
+                const fd = new FormData();
+                fd.append('torgo_path', path);
+                const res = await fetch('/load_torgo', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data.success) {
+                    allFiles = data.files;
+                    setHeaderMsg(`${data.total} files loaded`);
+                    showPlayerUI();
+                    updateProgress(data.labeled, data.total);
+                    renderPlaylist();
+                    const firstUnlabeled = allFiles.findIndex(f => !f.label);
+                    playAt(firstUnlabeled >= 0 ? firstUnlabeled : 0);
+                } else {
+                    setHeaderMsg(data.message);
+                }
+            } catch (e) {
+                setHeaderMsg('Error loading dataset.');
+            }
+        }
+
+        function showPlayerUI() {
+            document.getElementById('progress-wrap').style.display = 'block';
+            document.getElementById('label-row').style.display = 'flex';
+            document.getElementById('empty-state').style.display = 'none';
+            document.getElementById('player-content').style.display = 'block';
+        }
+
+        // ----------------------------------------------------------------
+        // Playback
+        // ----------------------------------------------------------------
+
+        function playAt(index) {
+            if (index < 0 || index >= allFiles.length) return;
+            currentIndex = index;
+            const f = allFiles[index];
+
+            audioPlayer.src = f.url;
+            audioPlayer.play().catch(() => {});  // autoplay may be blocked on first load
+
+            document.getElementById('np-filename').textContent = f.rel_path.replace(/\\/g, '/');
+            document.getElementById('prompt-box').textContent = f.prompt || '(no prompt)';
+
+            // Metadata badges
+            const metaEl = document.getElementById('np-meta');
+            metaEl.innerHTML = '';
+            [f.speaker, f.session, f.mic_type].filter(Boolean).forEach(t => {
+                const s = document.createElement('span');
+                s.textContent = t;
+                metaEl.appendChild(s);
+            });
+
+            setLabelBadge(f.label);
+            highlightPlaylist();
+            scrollToIndex(index);
+        }
+
+        function setLabelBadge(label) {
+            const el = document.getElementById('label-badge');
+            el.className = `current-label-badge${label ? ' ' + label : ''}`;
+            el.textContent = label ? `Labeled: ${label}` : 'Not yet labeled';
+        }
+
+        // ----------------------------------------------------------------
+        // Labeling
+        // ----------------------------------------------------------------
+
+        async function labelCurrent(label) {
+            if (currentIndex < 0) return;
+            const f = allFiles[currentIndex];
+            try {
+                const res = await fetch('/save_label', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rel_path: f.rel_path, label })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    allFiles[currentIndex].label = label;
+                    updateProgress(data.labeled, data.total);
+                    setLabelBadge(label);
+                    refreshItem(currentIndex);
+                    // Jump to next unlabeled
+                    const next = nextUnlabeled(currentIndex);
+                    if (next !== -1) playAt(next);
+                }
+            } catch (e) {
+                console.error('Error saving label:', e);
+            }
+        }
+
+        function skipFile() {
+            if (currentIndex < 0) return;
+            playAt((currentIndex + 1) % allFiles.length);
+        }
+
+        function nextUnlabeled(from) {
+            for (let i = from + 1; i < allFiles.length; i++) {
+                if (!allFiles[i].label) return i;
+            }
+            for (let i = 0; i < from; i++) {
+                if (!allFiles[i].label) return i;
+            }
+            return -1;  // all labeled
+        }
+
+        // ----------------------------------------------------------------
+        // Progress
+        // ----------------------------------------------------------------
+
+        function updateProgress(labeled, total) {
+            const pct = total > 0 ? Math.round((labeled / total) * 100) : 0;
+            document.getElementById('progress-text').textContent = `${labeled} / ${total} labeled`;
+            document.getElementById('progress-pct').textContent = `${pct}%`;
+            document.getElementById('progress-fill').style.width = `${pct}%`;
+        }
+
+        // ----------------------------------------------------------------
+        // Playlist rendering
+        // ----------------------------------------------------------------
+
+        function renderPlaylist() {
+            const pl = document.getElementById('playlist');
+            pl.innerHTML = '';
+            const visible = filteredFiles();
+            document.getElementById('sidebar-count').textContent =
+                visible.length === allFiles.length ? `${allFiles.length} files` : `${visible.length} / ${allFiles.length}`;
+
+            if (visible.length === 0) {
+                pl.innerHTML = '<li style="color:#444; cursor:default; text-align:center; padding:20px;">No files match</li>';
                 return;
             }
 
-            const formData = new FormData();
-            formData.append('log_file', file);
+            visible.forEach(({ f, i }) => {
+                const li = document.createElement('li');
+                li.dataset.i = i;
+                if (f.label) li.classList.add(`s-${f.label}`);
+                if (i === currentIndex) li.classList.add('playing');
 
-            logMessageUpload.textContent = 'Uploading and parsing log...';
-            logMessagePath.textContent = ''; // Clear other message
+                const dot = document.createElement('span');
+                dot.className = 'dot';
+                li.appendChild(dot);
 
-            try {
-                const response = await fetch('/upload_log', {
-                    method: 'POST',
-                    body: formData
+                const info = document.createElement('div');
+                info.className = 'file-info';
+                const parts = f.rel_path.replace(/\\/g, '/').split('/');
+                info.innerHTML = `
+                    <div class="file-name">${parts[parts.length - 1]}</div>
+                    <div class="file-sub">${parts.slice(0, -1).join(' / ')}</div>
+                `;
+                li.appendChild(info);
+
+                li.onclick = () => playAt(i);
+                pl.appendChild(li);
+            });
+        }
+
+        function filteredFiles() {
+            return allFiles
+                .map((f, i) => ({ f, i }))
+                .filter(({ f }) => {
+                    const matchFilter =
+                        currentFilter === 'all' ||
+                        (currentFilter === 'unlabeled' && !f.label) ||
+                        f.label === currentFilter;
+                    const matchSearch = !searchQuery ||
+                        f.rel_path.toLowerCase().includes(searchQuery) ||
+                        (f.prompt && f.prompt.toLowerCase().includes(searchQuery));
+                    return matchFilter && matchSearch;
                 });
-                const data = await response.json();
-                logMessageUpload.textContent = data.message;
-                if (data.success) {
-                    if (directoryPathInput.value) {
-                         selectDirectory(); // Re-load playlist with new transcription data
-                    }
-                }
-            } catch (error) {
-                logMessageUpload.textContent = 'Error uploading log file.';
-                console.error('Error uploading log file:', error);
-            }
+        }
+
+        function highlightPlaylist() {
+            document.querySelectorAll('#playlist li').forEach(li => {
+                li.classList.toggle('playing', parseInt(li.dataset.i, 10) === currentIndex);
+            });
+        }
+
+        function refreshItem(index) {
+            const li = document.querySelector(`#playlist li[data-i="${index}"]`);
+            if (!li) return;
+            const f = allFiles[index];
+            li.className = '';
+            if (f.label) li.classList.add(`s-${f.label}`);
+            if (index === currentIndex) li.classList.add('playing');
+        }
+
+        function scrollToIndex(index) {
+            const li = document.querySelector(`#playlist li[data-i="${index}"]`);
+            if (li) li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+
+        function setFilter(filter, btn) {
+            currentFilter = filter;
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderPlaylist();
+        }
+
+        function onSearch() {
+            searchQuery = document.getElementById('search-box').value.trim().toLowerCase();
+            renderPlaylist();
+        }
+
+        // ----------------------------------------------------------------
+        // Export
+        // ----------------------------------------------------------------
+
+        function exportLabels() {
+            window.location.href = '/export_labels';
+        }
+
+        // ----------------------------------------------------------------
+        // WER log (legacy)
+        // ----------------------------------------------------------------
+
+        async function uploadLogFile() {
+            const file = document.getElementById('logFileInput').files[0];
+            if (!file) { document.getElementById('log-message').textContent = 'Select a file first.'; return; }
+            const fd = new FormData();
+            fd.append('log_file', file);
+            const res = await fetch('/upload_log', { method: 'POST', body: fd });
+            const data = await res.json();
+            document.getElementById('log-message').textContent = data.message;
         }
 
         async function loadLogFromPath() {
-            const logPath = logPathInput.value;
-            if (!logPath) {
-                logMessagePath.textContent = 'Please enter a log file path.';
-                return;
-            }
-
-            logMessagePath.textContent = 'Loading log from path...';
-            logMessageUpload.textContent = ''; // Clear other message
-
-            try {
-                const response = await fetch('/load_log_from_path', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: `log_path=${encodeURIComponent(logPath)}`
-                });
-                const data = await response.json();
-                logMessagePath.textContent = data.message;
-                if (data.success) {
-                    if (directoryPathInput.value) {
-                         selectDirectory(); // Re-load playlist with new transcription data
-                    }
-                }
-            } catch (error) {
-                logMessagePath.textContent = 'Error loading log file from path.';
-                console.error('Error loading log file from path:', error);
-            }
-        }
-
-
-        async function selectDirectory() {
-            const path = directoryPathInput.value;
-            const response = await fetch('/select_directory', {
+            const path = document.getElementById('log_path_input').value;
+            const res = await fetch('/load_log_from_path', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `directory_path=${encodeURIComponent(path)}`
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `log_path=${encodeURIComponent(path)}`
             });
-            const data = await response.json();
-            directoryMessage.textContent = data.message;
-            if (data.success) {
-                currentPlaylistData = data.files_with_info;
-                renderPlaylist(currentPlaylistData);
-                directoryPathInput.value = path; 
-                currentPlayingIndex = -1;
-                currentSongElement.textContent = 'None';
-                audioPlayer.src = '';
-                audioPlayer.load();
-                hideTranscriptionDisplay();
-            } else {
-                playlistElement.innerHTML = '';
-                currentSongElement.textContent = 'None';
-                currentPlaylistData = [];
-                currentPlayingIndex = -1;
-                hideTranscriptionDisplay();
+            const data = await res.json();
+            document.getElementById('log-message').textContent = data.message;
+        }
+
+        // ----------------------------------------------------------------
+        // Keyboard shortcuts
+        // ----------------------------------------------------------------
+
+        document.addEventListener('keydown', e => {
+            if (e.target.tagName === 'INPUT') return;
+            switch (e.key) {
+                case 's': case 'S': e.preventDefault(); labelCurrent('speech'); break;
+                case 'x': case 'X': e.preventDefault(); labelCurrent('silence'); break;
+                case 'ArrowRight': e.preventDefault(); skipFile(); break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    if (currentIndex > 0) playAt(currentIndex - 1);
+                    break;
+                case ' ':
+                    e.preventDefault();
+                    if (audioPlayer.paused) audioPlayer.play().catch(() => {});
+                    else audioPlayer.pause();
+                    break;
+                case 'r': case 'R':
+                    e.preventDefault();
+                    audioPlayer.currentTime = 0;
+                    audioPlayer.play().catch(() => {});
+                    break;
             }
-        }
-
-        function renderPlaylist(playlistData) {
-            playlistElement.innerHTML = '';
-            if (playlistData.length === 0) {
-                playlistElement.innerHTML = '<li>No supported audio files found in this directory.</li>';
-                return;
-            }
-            playlistData.forEach((file, index) => {
-                const li = document.createElement('li');
-                const songNameSpan = document.createElement('span');
-                songNameSpan.textContent = file.name;
-                li.appendChild(songNameSpan);
-
-                if (file.transcription) {
-                    const werSpan = document.createElement('span');
-                    werSpan.classList.add('wer-display'); 
-                    werSpan.textContent = `WER: ${file.transcription.wer.toFixed(4)}`; 
-                    li.appendChild(werSpan);
-                }
-
-                li.onclick = () => playAudioAtIndex(index);
-                playlistElement.appendChild(li);
-            });
-            highlightCurrentSong();
-        }
-
-        function playAudioAtIndex(index) {
-            if (index < 0 || index >= currentPlaylistData.length) {
-                console.warn("Invalid playlist index:", index);
-                return;
-            }
-            currentPlayingIndex = index;
-            const song = currentPlaylistData[currentPlayingIndex];
-            audioPlayer.src = song.url;
-            audioPlayer.play();
-            currentSongElement.textContent = song.name;
-            displayTranscription(song.transcription);
-            highlightCurrentSong();
-        }
-
-        function displayTranscription(transcription) {
-            if (transcription) {
-                refText.textContent = transcription.reference_normalized;
-                predText.textContent = transcription.prediction_normalized;
-                werNum.textContent = transcription.wer.toFixed(4); 
-                transcriptionDisplay.style.display = 'block';
-            } else {
-                hideTranscriptionDisplay();
-            }
-        }
-
-        function hideTranscriptionDisplay() {
-            transcriptionDisplay.style.display = 'none';
-            refText.textContent = '';
-            predText.textContent = '';
-            werNum.textContent = '';
-        }
-
-        function playCurrent() {
-            if (currentPlaylistData.length === 0) {
-                alert("No audio files loaded. Select a directory first.");
-                return;
-            }
-            if (currentPlayingIndex === -1 && currentPlaylistData.length > 0) {
-                playAudioAtIndex(0);
-            } else if (audioPlayer.paused) {
-                audioPlayer.play();
-            }
-        }
-
-        function pauseAudio() {
-            audioPlayer.pause();
-        }
-
-        function stopAudio() {
-            audioPlayer.pause();
-            audioPlayer.currentTime = 0;
-            currentPlayingIndex = -1;
-            currentSongElement.textContent = 'None';
-            hideTranscriptionDisplay();
-            highlightCurrentSong();
-        }
-
-        function playNext() {
-            if (currentPlaylistData.length === 0) return;
-            let nextIndex = currentPlayingIndex + 1;
-            if (nextIndex >= currentPlaylistData.length) {
-                nextIndex = 0;
-            }
-            playAudioAtIndex(nextIndex);
-        }
-
-        function playPrevious() {
-            if (currentPlaylistData.length === 0) return;
-            let prevIndex = currentPlayingIndex - 1;
-            if (prevIndex < 0) {
-                prevIndex = currentPlaylistData.length - 1;
-            }
-            playAudioAtIndex(prevIndex);
-        }
-
-        function highlightCurrentSong() {
-            const playlistItems = playlistElement.children;
-            for (let i = 0; i < playlistItems.length; i++) {
-                if (i === currentPlayingIndex) {
-                    playlistItems[i].classList.add('playing');
-                } else {
-                    playlistItems[i].classList.remove('playing');
-                }
-            }
-        }
-
-        // Event listener for when audio finishes playing
-        audioPlayer.addEventListener('ended', () => {
-            playNext();
         });
 
-        // Initialize status when page loads
+        // Auto-advance when a clip ends
+        audioPlayer.addEventListener('ended', () => {
+            const next = nextUnlabeled(currentIndex);
+            if (next !== -1) playAt(next);
+        });
+
+        // ----------------------------------------------------------------
+        // Helpers
+        // ----------------------------------------------------------------
+
+        function setHeaderMsg(msg) {
+            document.getElementById('header-msg').textContent = msg;
+        }
+
+        // ----------------------------------------------------------------
+        // Init — restore state if server already has a dataset loaded
+        // ----------------------------------------------------------------
+
         document.addEventListener('DOMContentLoaded', async () => {
-            const response = await fetch('/status');
-            const data = await response.json();
-            directoryPathInput.value = data.currentDirectory || '';
-            currentPlaylistData = data.files_with_info || [];
-            renderPlaylist(currentPlaylistData);
-            if (data.logLoaded) {
-                // If log was already loaded on the server (e.g., from a previous run),
-                // update the log message in both places to reflect this.
-                logMessageUpload.textContent = "Log data previously loaded on server.";
-                logMessagePath.textContent = "Log data previously loaded on server.";
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                if (data.torgoRoot) {
+                    document.getElementById('torgo-path').value = data.torgoRoot;
+                }
+                if (data.torgoFiles && data.torgoFiles.length > 0) {
+                    allFiles = data.torgoFiles;
+                    setHeaderMsg(`${data.total} files loaded`);
+                    showPlayerUI();
+                    updateProgress(data.labeled, data.total);
+                    renderPlaylist();
+                    const firstUnlabeled = allFiles.findIndex(f => !f.label);
+                    playAt(firstUnlabeled >= 0 ? firstUnlabeled : 0);
+                }
+            } catch (e) {
+                console.warn('Could not fetch status:', e);
             }
         });
     </script>
