@@ -2,11 +2,15 @@ import os
 import re
 import csv
 import io
+import tempfile
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
+
+UPLOAD_DIR = os.path.join(tempfile.gettempdir(), 'torgo_uploads')
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Global state
 current_directory = None
@@ -39,6 +43,38 @@ def parse_log_content(log_content):
     return data
 
 
+SILENCE_PHONEMES = {
+    'h#', 'pau', 'epi', 'sil', 'SIL', 'sp', '#h',
+    'pcl', 'tcl', 'kcl', 'bcl', 'dcl', 'gcl',
+}
+
+
+def parse_phn(path):
+    """Parse a TIMIT-format .phn file into a list of segment dicts."""
+    segments = []
+    with open(path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                segments.append({
+                    'start': int(parts[0]),
+                    'end': int(parts[1]),
+                    'label': parts[2],
+                    'is_speech': parts[2] not in SILENCE_PHONEMES,
+                })
+    return segments
+
+
+def _find_phn(wav_dir, session_dir, stem):
+    """Return the path to a .phn file for the given stem, or None."""
+    candidates = [
+        os.path.join(wav_dir, stem + '.phn'),
+        os.path.join(session_dir, 'phn', stem + '.phn'),
+        os.path.join(session_dir, 'PHN', stem + '.phn'),
+    ]
+    return next((c for c in candidates if os.path.exists(c)), None)
+
+
 def find_torgo_files(root_dir):
     """
     Recursively find all WAV files in a Torgo dataset directory.
@@ -47,6 +83,7 @@ def find_torgo_files(root_dir):
       <speaker>/<session>/wav_headMic/<file>.wav
       <speaker>/<session>/wav_arrayMic/<file>.wav
       <speaker>/<session>/prompts/<file>.txt  <- reference text
+      <speaker>/<session>/phn/<file>.phn      <- phoneme boundaries (optional)
     """
     files = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
@@ -55,9 +92,10 @@ def find_torgo_files(root_dir):
             if not filename.lower().endswith('.wav'):
                 continue
             rel_path = os.path.relpath(os.path.join(dirpath, filename), root_dir)
-            # Prompts sit in a sibling 'prompts' (or 'Prompts') folder
             session_dir = os.path.dirname(dirpath)
             stem = os.path.splitext(filename)[0]
+
+            # Prompt text
             prompt_text = None
             for prompts_name in ('prompts', 'Prompts'):
                 candidate = os.path.join(session_dir, prompts_name, stem + '.txt')
@@ -68,17 +106,64 @@ def find_torgo_files(root_dir):
                     except Exception:
                         pass
                     break
+
+            # PHN file
+            phn_path = _find_phn(dirpath, session_dir, stem)
+
             parts = rel_path.replace('\\', '/').split('/')
             files.append({
                 'name': filename,
                 'rel_path': rel_path,
                 'url': f'/audio_files/{rel_path}',
                 'prompt': prompt_text,
+                'has_phn': phn_path is not None,
                 'speaker': parts[0] if len(parts) > 0 else None,
                 'session': parts[1] if len(parts) > 1 else None,
                 'mic_type': parts[2] if len(parts) > 2 else None,
             })
     return files
+
+
+@app.route('/upload_audio', methods=['POST'])
+def upload_audio():
+    """Accept an audio file (and optional .phn) uploaded directly from the browser."""
+    if 'audio' not in request.files or request.files['audio'].filename == '':
+        return jsonify({'success': False, 'message': 'No audio file provided.'})
+
+    audio_file = request.files['audio']
+    filename = os.path.basename(audio_file.filename)
+    if not filename.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS):
+        return jsonify({'success': False, 'message': f'Unsupported file type. Use: {SUPPORTED_AUDIO_EXTENSIONS}'})
+
+    audio_file.save(os.path.join(UPLOAD_DIR, filename))
+
+    phn_data = None
+    if 'phn' in request.files and request.files['phn'].filename != '':
+        phn_file = request.files['phn']
+        phn_save = os.path.join(UPLOAD_DIR, os.path.splitext(filename)[0] + '.phn')
+        phn_file.save(phn_save)
+        try:
+            segments = parse_phn(phn_save)
+            phn_data = {
+                'segments': segments,
+                'total_samples': segments[-1]['end'] if segments else 0
+            }
+        except Exception as e:
+            app.logger.warning(f'Could not parse uploaded PHN: {e}')
+
+    return jsonify({
+        'success': True,
+        'file': {
+            'name': filename,
+            'url': f'/uploaded_audio/{filename}',
+            'phn': phn_data,
+        }
+    })
+
+
+@app.route('/uploaded_audio/<filename>')
+def serve_uploaded_audio(filename):
+    return send_from_directory(UPLOAD_DIR, filename)
 
 
 @app.route('/audio_files/<path:filename>')
@@ -100,6 +185,30 @@ def index():
 # ---------------------------------------------------------------------------
 # Torgo dataset endpoints
 # ---------------------------------------------------------------------------
+
+@app.route('/get_phn/<path:filename>')
+def get_phn(filename):
+    """Return parsed PHN segments for a WAV file."""
+    root = torgo_root or current_directory
+    if not root:
+        return jsonify({'error': 'No dataset loaded'})
+
+    rel_path = filename.replace('\\', '/')
+    wav_path = os.path.join(root, rel_path)
+    stem = os.path.splitext(os.path.basename(rel_path))[0]
+    wav_dir = os.path.dirname(wav_path)
+    session_dir = os.path.dirname(wav_dir)
+
+    phn_path = _find_phn(wav_dir, session_dir, stem)
+    if not phn_path:
+        return jsonify({'error': 'No PHN file found'})
+
+    try:
+        segments = parse_phn(phn_path)
+        total_samples = segments[-1]['end'] if segments else 0
+        return jsonify({'segments': segments, 'total_samples': total_samples})
+    except Exception as e:
+        return jsonify({'error': str(e)})
 
 @app.route('/load_torgo', methods=['POST'])
 def load_torgo():

@@ -139,6 +139,57 @@
         .current-label-badge.speech  { background: rgba(39,174,96,0.18);  color: #2ecc71; }
         .current-label-badge.silence { background: rgba(192,57,43,0.18);  color: #e74c3c; }
 
+        /* Upload card */
+        .upload-card {
+            background: #1a1f2e;
+            border: 1px dashed #2a3a60;
+            border-radius: 10px;
+            padding: 16px 18px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .upload-card label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
+        .upload-field { display: flex; flex-direction: column; }
+        .upload-field input[type="file"] {
+            font-size: 12px;
+            color: #aaa;
+            background: #0e1420;
+            border: 1px solid #2a3048;
+            border-radius: 5px;
+            padding: 5px 8px;
+            cursor: pointer;
+        }
+        .upload-field input[type="file"]::file-selector-button {
+            background: #2c3555;
+            color: #aaa;
+            border: none;
+            border-radius: 4px;
+            padding: 3px 8px;
+            cursor: pointer;
+            margin-right: 8px;
+            font-size: 12px;
+        }
+        #upload-msg { font-size: 12px; color: #888; margin-left: auto; }
+
+        /* PHN timeline */
+        #phn-canvas {
+            display: none;
+            width: 100%;
+            margin-top: 12px;
+            border-radius: 4px;
+            cursor: crosshair;
+        }
+        #phn-no-file {
+            display: none;
+            font-size: 11px;
+            color: #444;
+            text-align: center;
+            margin-top: 10px;
+            font-style: italic;
+        }
+
         /* Empty state */
         .empty-state {
             text-align: center;
@@ -324,6 +375,20 @@
                 </div>
             </div>
 
+            <!-- Upload a single file -->
+            <div class="upload-card">
+                <div class="upload-field">
+                    <label>Audio file (.wav / .mp3 / .ogg)</label>
+                    <input type="file" id="upload-audio" accept=".wav,.mp3,.ogg">
+                </div>
+                <div class="upload-field">
+                    <label>PHN file (optional)</label>
+                    <input type="file" id="upload-phn" accept=".phn">
+                </div>
+                <button class="btn btn-load" onclick="uploadAndPlay()">Upload &amp; Play</button>
+                <span id="upload-msg"></span>
+            </div>
+
             <!-- Now playing -->
             <div class="now-playing-card">
                 <div class="empty-state" id="empty-state">
@@ -336,6 +401,8 @@
                     <div class="np-meta" id="np-meta"></div>
                     <div class="prompt-box" id="prompt-box">—</div>
                     <audio id="audioPlayer" controls></audio>
+                    <canvas id="phn-canvas"></canvas>
+                    <p id="phn-no-file">No PHN file found for this recording</p>
                     <div class="current-label-badge" id="label-badge">Not yet labeled</div>
                 </div>
             </div>
@@ -478,6 +545,16 @@
             setLabelBadge(f.label);
             highlightPlaylist();
             scrollToIndex(index);
+
+            // PHN timeline
+            if (f.has_phn) {
+                fetchAndDrawPhn(f.rel_path);
+            } else {
+                phnData = null;
+                stopPhnAnim();
+                document.getElementById('phn-canvas').style.display = 'none';
+                document.getElementById('phn-no-file').style.display = 'none';
+            }
         }
 
         function setLabelBadge(label) {
@@ -659,6 +736,204 @@
             const data = await res.json();
             document.getElementById('log-message').textContent = data.message;
         }
+
+        // ----------------------------------------------------------------
+        // Single-file upload
+        // ----------------------------------------------------------------
+
+        async function uploadAndPlay() {
+            const audioInput = document.getElementById('upload-audio');
+            const phnInput   = document.getElementById('upload-phn');
+            const msg        = document.getElementById('upload-msg');
+
+            if (!audioInput.files[0]) {
+                msg.textContent = 'Select an audio file first.';
+                return;
+            }
+
+            msg.textContent = 'Uploading…';
+            const fd = new FormData();
+            fd.append('audio', audioInput.files[0]);
+            if (phnInput.files[0]) fd.append('phn', phnInput.files[0]);
+
+            try {
+                const res  = await fetch('/upload_audio', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (!data.success) { msg.textContent = data.message; return; }
+
+                msg.textContent = `Uploaded: ${data.file.name}`;
+                showPlayerUI();
+
+                // Play immediately — treat as a standalone file (not in playlist)
+                const f = data.file;
+                audioPlayer.src = f.url;
+                audioPlayer.play().catch(() => {});
+                document.getElementById('np-filename').textContent = f.name;
+                document.getElementById('prompt-box').textContent  = '(uploaded file)';
+                document.getElementById('np-meta').innerHTML = '';
+                setLabelBadge(null);
+
+                // PHN timeline
+                if (f.phn && f.phn.segments && f.phn.segments.length > 0) {
+                    phnData = f.phn;
+                    initPhnCanvas();
+                    drawPhn();
+                    document.getElementById('phn-canvas').style.display = 'block';
+                    document.getElementById('phn-no-file').style.display = 'none';
+                } else {
+                    phnData = null;
+                    stopPhnAnim();
+                    document.getElementById('phn-canvas').style.display = 'none';
+                    document.getElementById('phn-no-file').style.display = phnInput.files[0] ? 'block' : 'none';
+                }
+            } catch (e) {
+                msg.textContent = 'Upload failed.';
+                console.error(e);
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // PHN timeline
+        // ----------------------------------------------------------------
+
+        const DPR = window.devicePixelRatio || 1;
+        const PHN_LABEL_W = 40;   // px reserved for the "PHN" label
+        const PHN_TRACK_H = 28;   // px height of the track
+        const PHN_PAD = 4;        // px top/bottom padding
+
+        let phnData = null;
+        let rafId = null;
+
+        async function fetchAndDrawPhn(rel_path) {
+            const canvas = document.getElementById('phn-canvas');
+            const noFile = document.getElementById('phn-no-file');
+            canvas.style.display = 'none';
+            noFile.style.display = 'none';
+            phnData = null;
+            stopPhnAnim();
+
+            try {
+                const res = await fetch(`/get_phn/${rel_path.replace(/\\/g, '/')}`);
+                const data = await res.json();
+                if (data.error || !data.segments || data.segments.length === 0) {
+                    noFile.style.display = 'block';
+                    return;
+                }
+                phnData = data;
+                initPhnCanvas();
+                drawPhn();
+                canvas.style.display = 'block';
+            } catch (e) {
+                console.warn('PHN fetch failed:', e);
+            }
+        }
+
+        function initPhnCanvas() {
+            const canvas = document.getElementById('phn-canvas');
+            const W = canvas.parentElement.offsetWidth;
+            const H = PHN_TRACK_H + PHN_PAD * 2;
+            canvas.width  = W * DPR;
+            canvas.height = H * DPR;
+            canvas.style.width  = W + 'px';
+            canvas.style.height = H + 'px';
+        }
+
+        function drawPhn() {
+            if (!phnData) return;
+            const canvas = document.getElementById('phn-canvas');
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width  / DPR;
+            const H = canvas.height / DPR;
+            const trackW = W - PHN_LABEL_W;
+            const total  = phnData.total_samples;
+
+            ctx.save();
+            ctx.scale(DPR, DPR);
+            ctx.clearRect(0, 0, W, H);
+
+            // Row label
+            ctx.fillStyle = '#555';
+            ctx.font = '10px system-ui';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('PHN', PHN_LABEL_W - 6, H / 2);
+
+            // Track background
+            ctx.fillStyle = '#111827';
+            ctx.fillRect(PHN_LABEL_W, PHN_PAD, trackW, PHN_TRACK_H);
+
+            // Segments
+            phnData.segments.forEach(seg => {
+                const x = PHN_LABEL_W + (seg.start / total) * trackW;
+                const w = Math.max(1, ((seg.end - seg.start) / total) * trackW);
+                ctx.fillStyle = seg.is_speech ? '#4a7fd4' : '#1e2535';
+                ctx.fillRect(x, PHN_PAD, w, PHN_TRACK_H);
+
+                // Phoneme label — only if segment is wide enough
+                if (w > 14) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(x, PHN_PAD, w, PHN_TRACK_H);
+                    ctx.clip();
+                    ctx.fillStyle = seg.is_speech ? 'rgba(255,255,255,0.72)' : '#3a4060';
+                    ctx.font = '9px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(seg.label, x + w / 2, PHN_PAD + PHN_TRACK_H / 2);
+                    ctx.restore();
+                }
+            });
+
+            // Playhead
+            if (audioPlayer.duration > 0) {
+                const px = PHN_LABEL_W + (audioPlayer.currentTime / audioPlayer.duration) * trackW;
+                ctx.strokeStyle = '#e94560';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(px, PHN_PAD - 2);
+                ctx.lineTo(px, PHN_PAD + PHN_TRACK_H + 2);
+                ctx.stroke();
+            }
+
+            ctx.restore();
+        }
+
+        function startPhnAnim() {
+            if (rafId) cancelAnimationFrame(rafId);
+            function loop() {
+                drawPhn();
+                if (!audioPlayer.paused) rafId = requestAnimationFrame(loop);
+            }
+            loop();
+        }
+
+        function stopPhnAnim() {
+            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+            drawPhn();
+        }
+
+        // Click on PHN timeline to seek
+        document.getElementById('phn-canvas').addEventListener('click', e => {
+            if (!phnData || !audioPlayer.duration) return;
+            const canvas = document.getElementById('phn-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left - PHN_LABEL_W;
+            const trackW = rect.width - PHN_LABEL_W;
+            if (x < 0 || x > trackW) return;
+            audioPlayer.currentTime = (x / trackW) * audioPlayer.duration;
+            drawPhn();
+        });
+
+        // Redraw on window resize
+        window.addEventListener('resize', () => {
+            if (phnData) { initPhnCanvas(); drawPhn(); }
+        });
+
+        audioPlayer.addEventListener('play',      startPhnAnim);
+        audioPlayer.addEventListener('pause',     stopPhnAnim);
+        audioPlayer.addEventListener('ended',     stopPhnAnim);
+        audioPlayer.addEventListener('seeked',    () => drawPhn());
+        audioPlayer.addEventListener('timeupdate', () => { if (audioPlayer.paused) drawPhn(); });
 
         // ----------------------------------------------------------------
         // Keyboard shortcuts
