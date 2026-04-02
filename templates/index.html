@@ -644,7 +644,7 @@
             wavesurfer.once('ready', async () => {
                 document.getElementById('waveform-controls').style.display = 'flex';
                 wsZoomFit();
-                wavesurfer.play().catch(() => {});
+                wavesurfer.play();
 
                 if (hasPhn) {
                     if (typeof relPathOrPhnData === 'string') {
