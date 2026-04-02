@@ -126,7 +126,7 @@ def find_torgo_files(root_dir):
     return files
 
 
-def run_vad(wav_path, aggressiveness=2):
+def run_vad(wav_path, aggressiveness=3):
     """
     Run WebRTC VAD on a WAV file.
     Returns a list of {start, end, is_speech} dicts with times in seconds.
@@ -167,8 +167,8 @@ def run_vad(wav_path, aggressiveness=2):
 
     total_dur = len(pcm) / (rate * 2)
 
-    # Smooth: fill silence gaps shorter than 300 ms between speech regions
-    gap_limit = max(1, int(300 / FRAME_MS))
+    # Smooth: fill silence gaps shorter than 150 ms between speech regions
+    gap_limit = max(1, int(150 / FRAME_MS))
     i = 0
     while i < len(labels):
         if not labels[i]:
@@ -233,7 +233,14 @@ def run_silero_vad(wav_path):
     wav_tensor = torch.from_numpy(samples)
 
     model = load_silero_vad()
-    timestamps = get_speech_timestamps(wav_tensor, model, sampling_rate=16000, return_seconds=True)
+    timestamps = get_speech_timestamps(
+        wav_tensor, model,
+        sampling_rate=16000,
+        threshold=0.6,
+        min_silence_duration_ms=200,
+        speech_pad_ms=15,
+        return_seconds=True,
+    )
     return [
         {'start': round(float(t['start']), 4), 'end': round(float(t['end']), 4), 'is_speech': True}
         for t in timestamps

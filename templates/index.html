@@ -678,16 +678,11 @@
             btn.textContent = 'Running…';
             btn.disabled = true;
 
-            let body;
-            if (currentIndex >= 0) {
-                body = { rel_path: allFiles[currentIndex].rel_path };
-            } else if (currentUploadedFilename) {
-                body = { uploaded: currentUploadedFilename };
-            } else {
-                btn.textContent = 'Run WebRTC VAD';
-                btn.disabled = false;
-                return;
-            }
+            if (currentIndex < 0) { btn.textContent = 'Run WebRTC VAD'; btn.disabled = false; return; }
+            const _vf = allFiles[currentIndex];
+            const body = _vf.rel_path.startsWith('uploaded/')
+                ? { uploaded: _vf.name }
+                : { rel_path: _vf.rel_path };
 
             try {
                 const res  = await fetch('/run_vad', {
@@ -765,16 +760,11 @@
             btn.textContent = 'Running…';
             btn.disabled = true;
 
-            let body;
-            if (currentIndex >= 0) {
-                body = { rel_path: allFiles[currentIndex].rel_path };
-            } else if (currentUploadedFilename) {
-                body = { uploaded: currentUploadedFilename };
-            } else {
-                btn.textContent = 'Run Silero VAD';
-                btn.disabled = false;
-                return;
-            }
+            if (currentIndex < 0) { btn.textContent = 'Run Silero VAD'; btn.disabled = false; return; }
+            const _sf = allFiles[currentIndex];
+            const body = _sf.rel_path.startsWith('uploaded/')
+                ? { uploaded: _sf.name }
+                : { rel_path: _sf.rel_path };
 
             try {
                 const res  = await fetch('/run_silero_vad', {
@@ -942,7 +932,7 @@
             highlightPlaylist();
             scrollToIndex(index);
 
-            wsLoadAudio(f.url, f.has_phn, f.rel_path);
+            wsLoadAudio(f.url, f.has_phn, f.phn_data || f.rel_path);
         }
 
         function setLabelBadge(label) {
@@ -1152,20 +1142,44 @@
 
                 msg.textContent = `Uploaded: ${data.file.name}`;
                 currentUploadedFilename = data.file.name;
-                showPlayerUI();
-
-                // currentIndex stays -1 (not part of playlist)
-                document.getElementById('np-filename').textContent = data.file.name;
-                document.getElementById('prompt-box').textContent  = '(uploaded file)';
-                document.getElementById('np-meta').innerHTML = '';
-                setLabelBadge(null);
 
                 const phnData = data.file.phn;
                 const hasPhn  = !!(phnData && phnData.segments && phnData.segments.length > 0);
+
+                // Add uploaded file to allFiles so labeling works like any dataset file
+                const relPath = `uploaded/${data.file.name}`;
+                const entry = {
+                    name: data.file.name,
+                    rel_path: relPath,
+                    url: data.file.url,
+                    prompt: null,
+                    has_phn: hasPhn,
+                    phn_data: phnData || null,
+                    speaker: null, session: null, mic_type: null,
+                    label: null,
+                };
+                const existingIdx = allFiles.findIndex(f => f.rel_path === relPath);
+                if (existingIdx >= 0) {
+                    entry.label = allFiles[existingIdx].label;  // preserve existing label
+                    allFiles[existingIdx] = entry;
+                    currentIndex = existingIdx;
+                } else {
+                    allFiles.push(entry);
+                    currentIndex = allFiles.length - 1;
+                }
+
+                showPlayerUI();
+                document.getElementById('np-filename').textContent = data.file.name;
+                document.getElementById('prompt-box').textContent  = '(uploaded file)';
+                document.getElementById('np-meta').innerHTML = '';
+                setLabelBadge(entry.label);
+                updateProgress(allFiles.filter(f => f.label).length, allFiles.length);
+                renderPlaylist();
+                highlightPlaylist();
+
                 wsLoadAudio(data.file.url, hasPhn, phnData || null);
 
                 if (!hasPhn && phnInput.files[0]) {
-                    // PHN was uploaded but failed to parse
                     document.getElementById('phn-no-file').style.display = 'block';
                 }
             } catch (e) {
