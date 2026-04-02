@@ -3,8 +3,8 @@ FROM python:3.11-slim
 WORKDIR /app
 COPY . /app
 
-# Install CPU-only torch first so silero-vad doesn't pull the 4 GB CUDA build
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# Install CPU-only torch + torchaudio so silero-vad doesn't pull the CUDA builds
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
