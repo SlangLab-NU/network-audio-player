@@ -536,6 +536,7 @@
         let wavesurfer = null;
         let currentRegion = null;   // user drag-selected region
         let phnRegionIds = new Set();
+        let addingPhnRegions = false;   // suppresses region-created handler during PHN load
         let currentZoom = 50;
 
         function initWaveSurfer() {
@@ -559,8 +560,11 @@
             });
 
             wavesurfer.on('region-created', region => {
-                // Ignore PHN regions added programmatically
-                if (phnRegionIds.has(region.id)) return;
+                // Ignore regions being added programmatically as PHN boundaries
+                if (addingPhnRegions) {
+                    phnRegionIds.add(region.id);
+                    return;
+                }
                 // Keep only one user-selected region
                 if (currentRegion) currentRegion.remove();
                 currentRegion = region;
@@ -595,18 +599,16 @@
             const duration = wavesurfer.getDuration();
             if (!totalSamples || !duration) return;
 
+            addingPhnRegions = true;
             phnData.segments.forEach(seg => {
                 const start = (seg.start / totalSamples) * duration;
                 const end   = (seg.end   / totalSamples) * duration;
                 const color = seg.is_speech
                     ? 'rgba(74,127,212,0.25)'
                     : 'rgba(255,255,255,0.03)';
-                const reg = wavesurfer.regions.add({
-                    start, end, color,
-                    drag: false, resize: false,
-                });
-                phnRegionIds.add(reg.id);
+                wavesurfer.regions.add({ start, end, color, drag: false, resize: false });
             });
+            addingPhnRegions = false;
 
             document.getElementById('phn-badge').style.display = 'inline-block';
         }
