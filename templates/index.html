@@ -446,6 +446,8 @@
                         <span id="phn-badge">PHN</span>
                         <button class="btn-wave" id="btn-run-vad" onclick="runVad()">Run WebRTC VAD</button>
                         <button class="btn-wave" id="btn-vad-toggle" onclick="toggleVad()" style="display:none;">VAD overlay</button>
+                        <button class="btn-wave" id="btn-run-silero" onclick="runSileroVad()">Run Silero VAD</button>
+                        <button class="btn-wave" id="btn-silero-toggle" onclick="toggleSilero()" style="display:none;">Silero overlay</button>
                         <div class="zoom-group">
                             <button class="btn-wave" onclick="wsZoomIn()" title="Zoom In">+</button>
                             <button class="btn-wave" onclick="wsZoomOut()" title="Zoom Out">−</button>
@@ -539,9 +541,12 @@
         let currentRegion = null;       // user drag-selected region
         let phnRegionIds = new Set();
         let addingPhnRegions = false;   // suppresses region-created handler during PHN load
-        let vadRegions = [];            // WaveSurfer region objects for VAD
+        let vadRegions = [];            // WaveSurfer region objects for WebRTC VAD
         let addingVadRegions = false;
         let vadVisible = false;
+        let sileroRegions = [];         // WaveSurfer region objects for Silero VAD
+        let addingSileroRegions = false;
+        let sileroVisible = false;
         let currentUploadedFilename = null;
         let currentZoom = 50;
 
@@ -566,8 +571,9 @@
             });
 
             wavesurfer.on('region-created', region => {
-                if (addingPhnRegions) { phnRegionIds.add(region.id); return; }
-                if (addingVadRegions) { vadRegions.push(region); return; }
+                if (addingPhnRegions)    { phnRegionIds.add(region.id); return; }
+                if (addingVadRegions)    { vadRegions.push(region);     return; }
+                if (addingSileroRegions) { sileroRegions.push(region);  return; }
                 // User drag-selected region — keep only one
                 if (currentRegion) currentRegion.remove();
                 currentRegion = region;
@@ -719,11 +725,98 @@
             if (runBtn) runBtn.textContent = 'Run WebRTC VAD';
         }
 
+        function addSileroRegions(segments) {
+            sileroRegions.forEach(r => r.remove());
+            sileroRegions = [];
+
+            addingSileroRegions = true;
+            segments.forEach(seg => {
+                if (!seg.is_speech) return;
+                wavesurfer.regions.add({
+                    start: seg.start,
+                    end: seg.end,
+                    color: 'rgba(50,200,100,0.45)',
+                    drag: false,
+                    resize: false,
+                });
+            });
+            addingSileroRegions = false;
+
+            sileroVisible = true;
+            const toggleBtn = document.getElementById('btn-silero-toggle');
+            toggleBtn.style.display = 'inline-block';
+            toggleBtn.classList.add('active');
+            toggleBtn.textContent = 'Silero overlay ✓';
+        }
+
+        function toggleSilero() {
+            sileroVisible = !sileroVisible;
+            sileroRegions.forEach(r => {
+                if (r.element) r.element.style.display = sileroVisible ? 'block' : 'none';
+            });
+            const btn = document.getElementById('btn-silero-toggle');
+            btn.classList.toggle('active', sileroVisible);
+            btn.textContent = sileroVisible ? 'Silero overlay ✓' : 'Silero overlay';
+        }
+
+        async function runSileroVad() {
+            if (!wavesurfer) return;
+            const btn = document.getElementById('btn-run-silero');
+            btn.textContent = 'Running…';
+            btn.disabled = true;
+
+            let body;
+            if (currentIndex >= 0) {
+                body = { rel_path: allFiles[currentIndex].rel_path };
+            } else if (currentUploadedFilename) {
+                body = { uploaded: currentUploadedFilename };
+            } else {
+                btn.textContent = 'Run Silero VAD';
+                btn.disabled = false;
+                return;
+            }
+
+            try {
+                const res  = await fetch('/run_silero_vad', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (data.error) {
+                    btn.textContent = 'Silero failed';
+                    alert('Silero VAD error: ' + data.error);
+                    return;
+                }
+                addSileroRegions(data.segments);
+                btn.textContent = 'Run Silero VAD';
+            } catch (e) {
+                btn.textContent = 'Silero failed';
+                console.error('[Silero]', e);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function resetSileroState() {
+            sileroRegions = [];
+            addingSileroRegions = false;
+            sileroVisible = false;
+            const toggleBtn = document.getElementById('btn-silero-toggle');
+            if (toggleBtn) {
+                toggleBtn.style.display = 'none';
+                toggleBtn.classList.remove('active');
+            }
+            const runBtn = document.getElementById('btn-run-silero');
+            if (runBtn) runBtn.textContent = 'Run Silero VAD';
+        }
+
         function wsLoadAudio(url, hasPhn, relPathOrPhnData) {
             // Reset state for new audio
             currentRegion = null;
             phnRegionIds.clear();
             resetVadState();
+            resetSileroState();
             document.getElementById('phn-badge').style.display = 'none';
             document.getElementById('phn-no-file').style.display = 'none';
             document.getElementById('btn-play-sel').disabled = true;

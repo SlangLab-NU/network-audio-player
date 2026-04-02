@@ -201,6 +201,53 @@ def run_vad(wav_path, aggressiveness=2):
     return segments
 
 
+def run_silero_vad(wav_path):
+    """
+    Run Silero VAD on a WAV file.
+    Returns a list of {start, end, is_speech} dicts with times in seconds.
+    """
+    try:
+        from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
+    except ImportError:
+        raise RuntimeError('silero-vad not installed — run: pip install silero-vad onnxruntime')
+
+    model = load_silero_vad()
+    wav = read_audio(wav_path)
+    timestamps = get_speech_timestamps(wav, model, return_seconds=True)
+    return [
+        {'start': round(float(t['start']), 4), 'end': round(float(t['end']), 4), 'is_speech': True}
+        for t in timestamps
+    ]
+
+
+@app.route('/run_silero_vad', methods=['POST'])
+def api_run_silero_vad():
+    """Run Silero VAD on a loaded dataset file or an uploaded file."""
+    data = request.get_json()
+    rel_path = data.get('rel_path')
+    uploaded = data.get('uploaded')
+
+    if rel_path:
+        root = torgo_root or current_directory
+        if not root:
+            return jsonify({'error': 'No dataset loaded'})
+        wav_path = os.path.join(root, rel_path.replace('\\', '/'))
+    elif uploaded:
+        wav_path = os.path.join(UPLOAD_DIR, os.path.basename(uploaded))
+    else:
+        return jsonify({'error': 'No file specified'})
+
+    if not os.path.exists(wav_path):
+        return jsonify({'error': f'File not found: {wav_path}'})
+
+    try:
+        segments = run_silero_vad(wav_path)
+        return jsonify({'segments': segments})
+    except Exception as e:
+        app.logger.error(f'Silero VAD error on {wav_path}: {e}')
+        return jsonify({'error': str(e)})
+
+
 @app.route('/run_vad', methods=['POST'])
 def api_run_vad():
     """Run WebRTC VAD on a loaded dataset file or an uploaded file."""
