@@ -6,8 +6,8 @@ COPY . /app
 # Install CPU-only torch + torchaudio first so silero-vad can't pull CUDA builds
 RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Install silero-vad without re-resolving deps (keeps the CPU torch/torchaudio above)
-RUN pip install --no-cache-dir silero-vad --no-deps
+# Install silero-vad — torch/torchaudio already present so pip won't re-pull CUDA builds
+RUN pip install --no-cache-dir silero-vad
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
