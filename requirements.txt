@@ -2,5 +2,3 @@ Flask
 Flask-CORS
 gunicorn
 webrtcvad-wheels
-silero-vad
-onnxruntime
