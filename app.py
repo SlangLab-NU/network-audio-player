@@ -458,6 +458,11 @@ def export_labels():
     writer = csv.writer(output)
     writer.writerow(['file', 'speaker', 'session', 'mic_type',
                      'label', 'start_time', 'end_time', 'duration', 'labeled_at', 'prompt'])
+
+    # Build lookup for dataset files
+    torgo_lookup = {f['rel_path']: f for f in torgo_files}
+
+    # Export dataset file labels
     for f in torgo_files:
         segs = labels.get(f['rel_path'], [])
         for seg in segs:
@@ -473,6 +478,23 @@ def export_labels():
                 seg.get('labeled_at', ''),
                 f.get('prompt', '') or ''
             ])
+
+    # Export labels for uploaded files (not in torgo_files)
+    for rel_path, segs in labels.items():
+        if rel_path in torgo_lookup:
+            continue
+        for seg in segs:
+            writer.writerow([
+                rel_path,
+                '', '', '',
+                seg.get('label', ''),
+                seg.get('start', ''),
+                seg.get('end', ''),
+                seg.get('duration', ''),
+                seg.get('labeled_at', ''),
+                ''
+            ])
+
     output.seek(0)
     return Response(
         output.getvalue(),
