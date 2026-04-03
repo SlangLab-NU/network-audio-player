@@ -159,6 +159,53 @@
         .btn-wave.active { background: #2c3a5a; color: #7fb3f5; border-color: #3a5a90; }
         .zoom-group { display: flex; gap: 4px; margin-left: auto; }
 
+        /* Region info + segments list */
+        .region-info {
+            display: none;
+            font-size: 12px;
+            color: #7fb3f5;
+            background: rgba(127,179,245,0.08);
+            border: 1px solid rgba(127,179,245,0.15);
+            border-radius: 6px;
+            padding: 7px 12px;
+            margin-top: 8px;
+            gap: 16px;
+        }
+        .region-info span { color: #aaa; }
+        .region-info strong { color: #e0e0e0; font-family: monospace; }
+
+        .segments-list {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 140px;
+            overflow-y: auto;
+        }
+        .segment-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #1e2535;
+            border-radius: 5px;
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+        .segment-item .seg-label {
+            padding: 1px 7px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .segment-item .seg-label.speech  { background: rgba(39,174,96,0.2);  color: #2ecc71; }
+        .segment-item .seg-label.silence { background: rgba(192,57,43,0.2);  color: #e74c3c; }
+        .segment-item .seg-times { color: #888; flex: 1; font-family: monospace; }
+        .segment-item .seg-del {
+            background: none; border: none; color: #555; cursor: pointer;
+            font-size: 13px; padding: 0 4px; line-height: 1;
+        }
+        .segment-item .seg-del:hover { color: #e74c3c; }
+
         #phn-badge {
             display: none;
             font-size: 11px;
@@ -346,8 +393,7 @@
             flex-shrink: 0;
             background: #2a3048;
         }
-        #playlist li.s-speech  .dot { background: #27ae60; }
-        #playlist li.s-silence .dot { background: #c0392b; }
+        #playlist li.s-labeled .dot { background: #27ae60; }
         .file-info { flex: 1; min-width: 0; }
         .file-name { color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .file-sub  { font-size: 11px; color: #444; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -456,14 +502,23 @@
                     </div>
 
                     <p id="phn-no-file">No PHN file found for this recording</p>
-                    <div class="current-label-badge" id="label-badge">Not yet labeled</div>
+
+                    <!-- Region selection info -->
+                    <div class="region-info" id="region-info">
+                        <span>Start:</span> <strong id="ri-start">—</strong>
+                        <span>End:</span>   <strong id="ri-end">—</strong>
+                        <span>Duration:</span> <strong id="ri-dur">—</strong>
+                    </div>
+
+                    <!-- Saved segments for this file -->
+                    <div class="segments-list" id="segments-list"></div>
                 </div>
             </div>
 
             <!-- Label buttons -->
             <div class="label-row" id="label-row">
                 <div class="label-btn-col">
-                    <button class="btn btn-speech" onclick="labelCurrent('speech')">Speech</button>
+                    <button class="btn btn-speech" onclick="labelCurrent('speech')">&#43; Speech</button>
                     <span class="key-hint">Press <kbd>S</kbd></span>
                 </div>
                 <div class="label-btn-col">
@@ -471,7 +526,7 @@
                     <span class="key-hint">Press <kbd>→</kbd></span>
                 </div>
                 <div class="label-btn-col">
-                    <button class="btn btn-silence" onclick="labelCurrent('silence')">Silence / Noise</button>
+                    <button class="btn btn-silence" onclick="labelCurrent('silence')">&#43; Silence</button>
                     <span class="key-hint">Press <kbd>X</kbd></span>
                 </div>
             </div>
@@ -578,6 +633,19 @@
                 if (currentRegion) currentRegion.remove();
                 currentRegion = region;
                 document.getElementById('btn-play-sel').disabled = false;
+                showRegionInfo(region);
+            });
+
+            wavesurfer.on('region-updated', region => {
+                if (currentRegion && region.id === currentRegion.id) showRegionInfo(region);
+            });
+
+            wavesurfer.on('region-removed', region => {
+                if (currentRegion && region.id === currentRegion.id) {
+                    currentRegion = null;
+                    document.getElementById('region-info').style.display = 'none';
+                    document.getElementById('btn-play-sel').disabled = true;
+                }
             });
 
             wavesurfer.on('region-removed', region => {
@@ -928,7 +996,8 @@
                 metaEl.appendChild(s);
             });
 
-            setLabelBadge(f.label);
+            document.getElementById('region-info').style.display = 'none';
+            renderSegments(f.segments || []);
             highlightPlaylist();
             scrollToIndex(index);
 
@@ -945,26 +1014,75 @@
         // Labeling
         // ----------------------------------------------------------------
 
+        function showRegionInfo(region) {
+            const dur = region.end - region.start;
+            document.getElementById('ri-start').textContent = region.start.toFixed(3) + 's';
+            document.getElementById('ri-end').textContent   = region.end.toFixed(3)   + 's';
+            document.getElementById('ri-dur').textContent   = dur.toFixed(3)           + 's';
+            document.getElementById('region-info').style.display = 'flex';
+        }
+
+        function renderSegments(segments) {
+            const el = document.getElementById('segments-list');
+            el.innerHTML = '';
+            if (!segments || segments.length === 0) return;
+            segments.forEach((seg, i) => {
+                const div = document.createElement('div');
+                div.className = 'segment-item';
+                div.innerHTML = `
+                    <span class="seg-label ${seg.label}">${seg.label}</span>
+                    <span class="seg-times">${seg.start.toFixed(3)}s – ${seg.end.toFixed(3)}s &nbsp;(${seg.duration.toFixed(3)}s)</span>
+                    <button class="seg-del" title="Delete" onclick="deleteSegment(${i})">✕</button>
+                `;
+                el.appendChild(div);
+            });
+        }
+
         async function labelCurrent(label) {
             if (currentIndex < 0) return;
             const f = allFiles[currentIndex];
+
+            // Use selected region, or fall back to the whole file
+            const duration = wavesurfer ? wavesurfer.getDuration() : 0;
+            const start_time = currentRegion ? currentRegion.start : 0;
+            const end_time   = currentRegion ? currentRegion.end   : duration;
+
             try {
                 const res  = await fetch('/save_label', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ rel_path: f.rel_path, label })
+                    body: JSON.stringify({ rel_path: f.rel_path, label, start_time, end_time })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    allFiles[currentIndex].label = label;
+                    allFiles[currentIndex].segments = data.segments;
                     updateProgress(data.labeled, data.total);
-                    setLabelBadge(label);
+                    renderSegments(data.segments);
                     refreshItem(currentIndex);
-                    const next = nextUnlabeled(currentIndex);
-                    if (next !== -1) playAt(next);
                 }
             } catch (e) {
                 console.error('Error saving label:', e);
+            }
+        }
+
+        async function deleteSegment(index) {
+            if (currentIndex < 0) return;
+            const f = allFiles[currentIndex];
+            try {
+                const res  = await fetch('/delete_label', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rel_path: f.rel_path, index })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    allFiles[currentIndex].segments = data.segments;
+                    updateProgress(data.labeled, data.total);
+                    renderSegments(data.segments);
+                    refreshItem(currentIndex);
+                }
+            } catch (e) {
+                console.error('Error deleting segment:', e);
             }
         }
 
@@ -974,11 +1092,12 @@
         }
 
         function nextUnlabeled(from) {
+            const unlabeled = f => !f.segments || f.segments.length === 0;
             for (let i = from + 1; i < allFiles.length; i++) {
-                if (!allFiles[i].label) return i;
+                if (unlabeled(allFiles[i])) return i;
             }
             for (let i = 0; i < from; i++) {
-                if (!allFiles[i].label) return i;
+                if (unlabeled(allFiles[i])) return i;
             }
             return -1;
         }
@@ -1015,7 +1134,8 @@
             visible.forEach(({ f, i }) => {
                 const li = document.createElement('li');
                 li.dataset.i = i;
-                if (f.label) li.classList.add(`s-${f.label}`);
+                const labeled = f.segments && f.segments.length > 0;
+                if (labeled) li.classList.add('s-labeled');
                 if (i === currentIndex) li.classList.add('playing');
 
                 const dot = document.createElement('span');
@@ -1025,9 +1145,10 @@
                 const info = document.createElement('div');
                 info.className = 'file-info';
                 const parts = f.rel_path.replace(/\\/g, '/').split('/');
+                const segCount = f.segments ? f.segments.length : 0;
                 info.innerHTML = `
                     <div class="file-name">${parts[parts.length - 1]}</div>
-                    <div class="file-sub">${parts.slice(0, -1).join(' / ')}</div>
+                    <div class="file-sub">${parts.slice(0, -1).join(' / ')}${segCount ? ` &nbsp;·&nbsp; ${segCount} segment${segCount > 1 ? 's' : ''}` : ''}</div>
                 `;
                 li.appendChild(info);
 
@@ -1036,14 +1157,20 @@
             });
         }
 
+        function hasLabel(f, type) {
+            return f.segments && f.segments.some(s => s.label === type);
+        }
+
         function filteredFiles() {
             return allFiles
                 .map((f, i) => ({ f, i }))
                 .filter(({ f }) => {
+                    const labeled = f.segments && f.segments.length > 0;
                     const matchFilter =
                         currentFilter === 'all' ||
-                        (currentFilter === 'unlabeled' && !f.label) ||
-                        f.label === currentFilter;
+                        (currentFilter === 'unlabeled' && !labeled) ||
+                        (currentFilter === 'speech'  && hasLabel(f, 'speech')) ||
+                        (currentFilter === 'silence' && hasLabel(f, 'silence'));
                     const matchSearch = !searchQuery ||
                         f.rel_path.toLowerCase().includes(searchQuery) ||
                         (f.prompt && f.prompt.toLowerCase().includes(searchQuery));
@@ -1061,9 +1188,17 @@
             const li = document.querySelector(`#playlist li[data-i="${index}"]`);
             if (!li) return;
             const f = allFiles[index];
+            const labeled = f.segments && f.segments.length > 0;
             li.className = '';
-            if (f.label) li.classList.add(`s-${f.label}`);
+            if (labeled) li.classList.add('s-labeled');
             if (index === currentIndex) li.classList.add('playing');
+            // Update segment count in subtitle
+            const sub = li.querySelector('.file-sub');
+            if (sub) {
+                const parts = f.rel_path.replace(/\\/g, '/').split('/');
+                const segCount = f.segments ? f.segments.length : 0;
+                sub.innerHTML = `${parts.slice(0, -1).join(' / ')}${segCount ? ` &nbsp;·&nbsp; ${segCount} segment${segCount > 1 ? 's' : ''}` : ''}`;
+            }
         }
 
         function scrollToIndex(index) {
@@ -1172,8 +1307,8 @@
                 document.getElementById('np-filename').textContent = data.file.name;
                 document.getElementById('prompt-box').textContent  = '(uploaded file)';
                 document.getElementById('np-meta').innerHTML = '';
-                setLabelBadge(entry.label);
-                updateProgress(allFiles.filter(f => f.label).length, allFiles.length);
+                renderSegments(entry.segments || []);
+                updateProgress(allFiles.filter(f => f.segments && f.segments.length > 0).length, allFiles.length);
                 renderPlaylist();
                 highlightPlaylist();
 
@@ -1239,7 +1374,7 @@
                     showPlayerUI();
                     updateProgress(data.labeled, data.total);
                     renderPlaylist();
-                    const firstUnlabeled = allFiles.findIndex(f => !f.label);
+                    const firstUnlabeled = allFiles.findIndex(f => !f.segments || f.segments.length === 0);
                     playAt(firstUnlabeled >= 0 ? firstUnlabeled : 0);
                 }
             } catch (e) {

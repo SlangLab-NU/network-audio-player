@@ -5,6 +5,7 @@ import io
 import wave
 import audioop
 import tempfile
+from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
@@ -400,11 +401,11 @@ def load_torgo():
         return jsonify({"success": False, "message": f"Directory not found: {root}"})
     torgo_root = root
     torgo_files = find_torgo_files(root)
-    labeled_count = sum(1 for f in torgo_files if f['rel_path'] in labels)
+    labeled_count = sum(1 for f in torgo_files if labels.get(f['rel_path']))
     return jsonify({
         "success": True,
         "message": f"Loaded {len(torgo_files)} audio files.",
-        "files": [{**f, 'label': labels.get(f['rel_path'])} for f in torgo_files],
+        "files": [{**f, 'segments': labels.get(f['rel_path'], [])} for f in torgo_files],
         "total": len(torgo_files),
         "labeled": labeled_count
     })
@@ -412,32 +413,66 @@ def load_torgo():
 
 @app.route('/save_label', methods=['POST'])
 def save_label():
-    """Save a speech/silence label for a file."""
+    """Save a time-stamped speech/silence segment for a file."""
     data = request.get_json()
-    rel_path = data.get('rel_path')
-    label = data.get('label')
+    rel_path  = data.get('rel_path')
+    label     = data.get('label')
+    start_time = data.get('start_time', 0.0)
+    end_time   = data.get('end_time', 0.0)
     if not rel_path or label not in ('speech', 'silence'):
         return jsonify({"success": False, "message": "Invalid label data."})
-    labels[rel_path] = label
-    labeled_count = sum(1 for f in torgo_files if f['rel_path'] in labels)
-    return jsonify({"success": True, "labeled": labeled_count, "total": len(torgo_files)})
+    if rel_path not in labels:
+        labels[rel_path] = []
+    segment = {
+        'start':      round(float(start_time), 4),
+        'end':        round(float(end_time), 4),
+        'label':      label,
+        'duration':   round(float(end_time) - float(start_time), 4),
+        'labeled_at': datetime.now().isoformat(),
+    }
+    labels[rel_path].append(segment)
+    labeled_count = sum(1 for f in torgo_files if labels.get(f['rel_path']))
+    return jsonify({"success": True, "segments": labels[rel_path],
+                    "labeled": labeled_count, "total": len(torgo_files)})
+
+
+@app.route('/delete_label', methods=['POST'])
+def delete_label():
+    """Delete a single segment by index."""
+    data = request.get_json()
+    rel_path = data.get('rel_path')
+    index    = data.get('index')
+    if rel_path in labels and isinstance(index, int) and 0 <= index < len(labels[rel_path]):
+        labels[rel_path].pop(index)
+        if not labels[rel_path]:
+            del labels[rel_path]
+    labeled_count = sum(1 for f in torgo_files if labels.get(f['rel_path']))
+    return jsonify({"success": True, "segments": labels.get(rel_path, []),
+                    "labeled": labeled_count, "total": len(torgo_files)})
 
 
 @app.route('/export_labels', methods=['GET'])
 def export_labels():
-    """Export all labels as a CSV file."""
+    """Export all labeled segments as a CSV file."""
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['file', 'speaker', 'session', 'mic_type', 'label', 'prompt'])
+    writer.writerow(['file', 'speaker', 'session', 'mic_type',
+                     'label', 'start_time', 'end_time', 'duration', 'labeled_at', 'prompt'])
     for f in torgo_files:
-        writer.writerow([
-            f['rel_path'].replace('\\', '/'),
-            f.get('speaker', ''),
-            f.get('session', ''),
-            f.get('mic_type', ''),
-            labels.get(f['rel_path'], ''),
-            f.get('prompt', '') or ''
-        ])
+        segs = labels.get(f['rel_path'], [])
+        for seg in segs:
+            writer.writerow([
+                f['rel_path'].replace('\\', '/'),
+                f.get('speaker', ''),
+                f.get('session', ''),
+                f.get('mic_type', ''),
+                seg.get('label', ''),
+                seg.get('start', ''),
+                seg.get('end', ''),
+                seg.get('duration', ''),
+                seg.get('labeled_at', ''),
+                f.get('prompt', '') or ''
+            ])
     output.seek(0)
     return Response(
         output.getvalue(),
@@ -455,7 +490,7 @@ def get_status():
     labeled_count = sum(1 for f in torgo_files if f['rel_path'] in labels)
     return jsonify({
         "torgoRoot": torgo_root,
-        "torgoFiles": [{**f, 'label': labels.get(f['rel_path'])} for f in torgo_files],
+        "torgoFiles": [{**f, 'segments': labels.get(f['rel_path'], [])} for f in torgo_files],
         "labeled": labeled_count,
         "total": len(torgo_files),
         # Legacy fields
